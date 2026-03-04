@@ -5,8 +5,9 @@ from typing import AsyncIterator, Dict, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.adapters.clients.chat_history import ChatHistoryRepository
-from src.adapters.clients.rag import RAGClient
+from src.services.rag import IntegratedRAGService
 from src.adapters.llm.gemini import GeminiAdapter
+from src.core.database import get_db_session
 
 logger = logging.getLogger("milo-orchestrator.agent")
 
@@ -18,8 +19,8 @@ class OrchestratorAgent:
     High-level orchestrator that coordinates the database, RAG service, and LLM.
     """
 
-    def __init__(self) -> None:
-        self.rag_client = RAGClient()
+    def __init__(self, rag_service: IntegratedRAGService) -> None:
+        self.rag_service = rag_service
         self.llm_adapter = GeminiAdapter()
         self.history_repo = ChatHistoryRepository()
 
@@ -31,7 +32,8 @@ class OrchestratorAgent:
     ) -> str:
         """Stateless RAG pipeline (no session persistence)."""
         logger.info("Processing query: %s", query)
-        context_chunks = await self.rag_client.retrieve_context(query)
+        async with get_db_session() as db:
+            context_chunks = await self.rag_service.retrieve_context(db, query)
         if not context_chunks:
             logger.info("No context retrieved. Bypassing LLM execution.")
             return _NO_CONTEXT_MSG
@@ -48,7 +50,7 @@ class OrchestratorAgent:
         history = await self._load_history(db, session_id)
         await self._persist_user_message(db, session_id, query)
 
-        context_chunks = await self.rag_client.retrieve_context(query)
+        context_chunks = await self.rag_service.retrieve_context(db, query)
         if not context_chunks:
             yield await self._handle_no_context(db, session_id)
             return
