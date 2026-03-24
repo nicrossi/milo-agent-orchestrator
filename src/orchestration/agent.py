@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from typing import AsyncIterator, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +11,12 @@ from src.core.database import get_db_session
 from src.services.rag import IntegratedRAGService
 
 logger = logging.getLogger("milo-orchestrator.agent")
-
-_NO_CONTEXT_MSG = "I couldn't find any relevant documents in my database to answer that."
+_FALLBACK_BASE_CONTEXT = (
+    "You are Milo, an AI metacognitive coach for students. "
+    "Your goal is to guide reflection through questions, not give direct final answers. "
+    "Help users clarify goals, monitor understanding, evaluate strategy, and transfer learning. "
+    "Be warm, concise, and practical."
+)
 
 
 class OrchestratorAgent:
@@ -23,6 +28,22 @@ class OrchestratorAgent:
         self.rag_service = rag_service
         self.llm_adapter = GeminiAdapter()
         self.history_repo = ChatHistoryRepository()
+        self.base_context = self._load_base_context()
+
+    @staticmethod
+    def _load_base_context() -> str:
+        prompt_file = Path(__file__).resolve().parents[1] / "prompts" / "milo_base_context.md"
+        try:
+            text = prompt_file.read_text(encoding="utf-8").strip()
+            if text:
+                return text
+        except Exception:
+            logger.warning("Could not load milo_base_context.md; using inline fallback.")
+        return _FALLBACK_BASE_CONTEXT
+
+    def _compose_context(self, rag_chunks: List[str]) -> List[str]:
+        # Always include Milo identity + behavior instructions.
+        return [self.base_context, *rag_chunks]
 
     async def process_query(
         self,
@@ -33,11 +54,8 @@ class OrchestratorAgent:
         """Stateless RAG pipeline."""
         logger.info("Processing stateless query for user=%s", user_id or "<none>")
         async with get_db_session() as db:
-            context_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        if not context_chunks:
-            logger.info("No context retrieved. Bypassing LLM execution.")
-            return _NO_CONTEXT_MSG
-
+            rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
+        context_chunks = self._compose_context(rag_chunks)
         return self.llm_adapter.generate_answer(query, context_chunks, history)
 
     async def process_session_stream(
@@ -52,10 +70,8 @@ class OrchestratorAgent:
         history = await self._load_history(db, user_id, session_id)
         await self._persist_user_message(db, user_id, session_id, query)
 
-        context_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        if not context_chunks:
-            yield await self._handle_no_context(db, user_id, session_id)
-            return
+        rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
+        context_chunks = self._compose_context(rag_chunks)
 
         async for chunk in self._stream_and_persist(
             db, user_id, session_id, query, context_chunks, history
@@ -79,12 +95,6 @@ class OrchestratorAgent:
     ) -> None:
         await self.history_repo.save_message(db, user_id, session_id, "user", query)
         await db.commit()
-
-    async def _handle_no_context(self, db: AsyncSession, user_id: str, session_id: str) -> str:
-        logger.info("Session '%s': no RAG context for user=%s.", session_id, user_id)
-        await self.history_repo.save_message(db, user_id, session_id, "model", _NO_CONTEXT_MSG)
-        await db.commit()
-        return _NO_CONTEXT_MSG
 
     async def _stream_and_persist(
         self,

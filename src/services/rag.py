@@ -45,6 +45,7 @@ class VectorDBRepository:
                 SELECT chunk_text
                 FROM document_embeddings
                 WHERE owner_user_id = :user_id
+                   OR owner_user_id = 'GLOBAL'
                 ORDER BY embedding <=> '{vector_literal}'::vector ASC
                 LIMIT :limit
             """)

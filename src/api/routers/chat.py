@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
+from sqlalchemy import text
 from src.core.database import get_db_session
 
 from src.api.session import ChatSession
@@ -48,6 +49,39 @@ async def process_stateless_chat(
     except Exception:
         logger.error("Unexpected stateless chat error.", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
+
+
+@router.post("/bootstrap-user")
+async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require_http_user)):
+    """
+    Ensure the authenticated Firebase user exists in relational users table.
+    Safe to call repeatedly (idempotent upsert).
+    """
+    display_name = str(
+        user.claims.get("name")
+        or user.claims.get("displayName")
+        or (user.email.split("@")[0] if user.email else "")
+    ).strip()
+    email = str(user.email or "").strip() or f"{user.uid}@milo.local"
+
+    try:
+        async with get_db_session() as db:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO users (id, email, display_name)
+                    VALUES (:id, :email, :display_name)
+                    ON CONFLICT (id) DO UPDATE
+                    SET email = EXCLUDED.email,
+                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name)
+                    """
+                ),
+                {"id": user.uid, "email": email, "display_name": display_name},
+            )
+        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name}
+    except Exception:
+        logger.error("Failed to bootstrap authenticated user into users table.", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to bootstrap user.")
 
 
 @router.get("/history/{session_id}")
