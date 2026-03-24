@@ -21,6 +21,7 @@ frozenlist==1.8.0
 fsspec==2026.2.0
 genai==2.1.0
 google-auth==2.48.0
+firebase-admin==7.1.0
 google-genai==1.65.0
 greenlet==3.3.2
 h11==0.16.0
@@ -47,7 +48,7 @@ parso==0.8.6
 pexpect==4.9.0
 prompt_toolkit==3.0.52
 propcache==0.4.1
-protobuf==7.34.0
+protobuf>=4.25.8,<7
 ptyprocess==0.7.0
 pure_eval==0.2.3
 pyasn1==0.6.2

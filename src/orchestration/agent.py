@@ -5,9 +5,9 @@ from typing import AsyncIterator, Dict, List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.adapters.clients.chat_history import ChatHistoryRepository
-from src.services.rag import IntegratedRAGService
 from src.adapters.llm.gemini import GeminiAdapter
 from src.core.database import get_db_session
+from src.services.rag import IntegratedRAGService
 
 logger = logging.getLogger("milo-orchestrator.agent")
 
@@ -24,16 +24,16 @@ class OrchestratorAgent:
         self.llm_adapter = GeminiAdapter()
         self.history_repo = ChatHistoryRepository()
 
-    # ── Public API ────────────────────────────────────────────────────
     async def process_query(
-            self,
-            query: str,
-            history: Optional[List[Dict[str, str]]] = None,
+        self,
+        query: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        user_id: Optional[str] = None,
     ) -> str:
-        """Stateless RAG pipeline (no session persistence)."""
-        logger.info("Processing query: %s", query)
+        """Stateless RAG pipeline."""
+        logger.info("Processing stateless query for user=%s", user_id or "<none>")
         async with get_db_session() as db:
-            context_chunks = await self.rag_service.retrieve_context(db, query)
+            context_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
         if not context_chunks:
             logger.info("No context retrieved. Bypassing LLM execution.")
             return _NO_CONTEXT_MSG
@@ -41,51 +41,60 @@ class OrchestratorAgent:
         return self.llm_adapter.generate_answer(query, context_chunks, history)
 
     async def process_session_stream(
-            self,
-            db: AsyncSession,
-            session_id: str,
-            query: str,
+        self,
+        db: AsyncSession,
+        user_id: str,
+        session_id: str,
+        query: str,
     ) -> AsyncIterator[str]:
-        """Session-aware RAG + LLM streaming pipeline."""
-        history = await self._load_history(db, session_id)
-        await self._persist_user_message(db, session_id, query)
+        """Session-aware RAG + LLM streaming pipeline with user isolation."""
+        await self.history_repo.bind_or_validate_session_owner(db, session_id, user_id)
+        history = await self._load_history(db, user_id, session_id)
+        await self._persist_user_message(db, user_id, session_id, query)
 
-        context_chunks = await self.rag_service.retrieve_context(db, query)
+        context_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
         if not context_chunks:
-            yield await self._handle_no_context(db, session_id)
+            yield await self._handle_no_context(db, user_id, session_id)
             return
 
-        async for chunk in self._stream_and_persist(db, session_id, query, context_chunks, history):
+        async for chunk in self._stream_and_persist(
+            db, user_id, session_id, query, context_chunks, history
+        ):
             yield chunk
 
-    async def _load_history(self, db: AsyncSession, session_id: str) -> List[Dict[str, str]]:
-        """Load prior conversation turns from the database."""
-        history = await self.history_repo.get_history(db, session_id)
-        logger.info("Session '%s': loaded %d previous messages.", session_id, len(history))
+    async def _load_history(
+        self, db: AsyncSession, user_id: str, session_id: str
+    ) -> List[Dict[str, str]]:
+        history = await self.history_repo.get_history(db, user_id, session_id)
+        logger.info(
+            "Session '%s': loaded %d previous messages for user=%s.",
+            session_id,
+            len(history),
+            user_id,
+        )
         return history
 
-    async def _persist_user_message(self, db: AsyncSession, session_id: str, query: str) -> None:
-        """Persist the incoming user turn before calling any external service."""
-        await self.history_repo.save_message(db, session_id, "user", query)
+    async def _persist_user_message(
+        self, db: AsyncSession, user_id: str, session_id: str, query: str
+    ) -> None:
+        await self.history_repo.save_message(db, user_id, session_id, "user", query)
         await db.commit()
 
-    async def _handle_no_context(self, db: AsyncSession, session_id: str) -> str:
-        """Persist and return the fallback when RAG yields nothing."""
-        logger.info("Session '%s': no RAG context — returning fallback.", session_id)
-        await self.history_repo.save_message(db, session_id, "model", _NO_CONTEXT_MSG)
+    async def _handle_no_context(self, db: AsyncSession, user_id: str, session_id: str) -> str:
+        logger.info("Session '%s': no RAG context for user=%s.", session_id, user_id)
+        await self.history_repo.save_message(db, user_id, session_id, "model", _NO_CONTEXT_MSG)
         await db.commit()
         return _NO_CONTEXT_MSG
 
     async def _stream_and_persist(
-            self,
-            db: AsyncSession,
-            session_id: str,
-            query: str,
-            context_chunks: List[str],
-            history: List[Dict[str, str]],
+        self,
+        db: AsyncSession,
+        user_id: str,
+        session_id: str,
+        query: str,
+        context_chunks: List[str],
+        history: List[Dict[str, str]],
     ) -> AsyncIterator[str]:
-        """Stream the LLM response and guarantee persistence."""
-
         collected: List[str] = []
         interrupted = False
 
@@ -98,17 +107,16 @@ class OrchestratorAgent:
             logger.info("Session '%s': client disconnected mid-stream.", session_id)
             raise
         finally:
-            await self._persist_model_response(db, session_id, collected, interrupted)
+            await self._persist_model_response(db, user_id, session_id, collected, interrupted)
 
     async def _persist_model_response(
-            self,
-            db: AsyncSession,
-            session_id: str,
-            parts: List[str],
-            interrupted: bool,
+        self,
+        db: AsyncSession,
+        user_id: str,
+        session_id: str,
+        parts: List[str],
+        interrupted: bool,
     ) -> None:
-        """Persist the complete (or partial) model response."""
-
         if not parts:
             return
 
@@ -117,11 +125,12 @@ class OrchestratorAgent:
             response += " [Interrupted]"
 
         try:
-            await self.history_repo.save_message(db, session_id, "model", response)
+            await self.history_repo.save_message(db, user_id, session_id, "model", response)
             await db.commit()
-            logger.info("Session '%s': saved model response (%d chars).",
-                        session_id, len(response))
+            logger.info("Session '%s': saved model response (%d chars).", session_id, len(response))
         except Exception:
             logger.error(
                 "Session '%s': failed to save model response to DB.",
-                session_id, exc_info=True)
+                session_id,
+                exc_info=True,
+            )

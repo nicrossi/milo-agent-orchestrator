@@ -34,19 +34,29 @@ class VectorDBRepository:
 
     @staticmethod
     async def search_similar(
-        db: AsyncSession, vector: List[float], limit: int
+        db: AsyncSession, vector: List[float], limit: int, user_id: str | None = None
     ) -> List[str]:
         # The embedding vector is an internal List[float]
         # (never user input) so it is safe to inline it as
         # a literal string directly into the SQL expression.
         vector_literal = str(vector)
-        sql = text(f"""
-            SELECT chunk_text
-            FROM document_embeddings
-            ORDER BY embedding <=> '{vector_literal}'::vector ASC
-            LIMIT :limit
-        """)
-        result = await db.execute(sql, {"limit": limit})
+        if user_id:
+            sql = text(f"""
+                SELECT chunk_text
+                FROM document_embeddings
+                WHERE owner_user_id = :user_id
+                ORDER BY embedding <=> '{vector_literal}'::vector ASC
+                LIMIT :limit
+            """)
+            result = await db.execute(sql, {"limit": limit, "user_id": user_id})
+        else:
+            sql = text(f"""
+                SELECT chunk_text
+                FROM document_embeddings
+                ORDER BY embedding <=> '{vector_literal}'::vector ASC
+                LIMIT :limit
+            """)
+            result = await db.execute(sql, {"limit": limit})
         return [row[0] for row in result.fetchall()]
 
 
@@ -84,7 +94,7 @@ class IntegratedRAGService:
             logger.info("Integrated RAG Process Pool shut down.")
 
     async def retrieve_context(
-        self, db: AsyncSession, query: str, limit: int = 3
+        self, db: AsyncSession, query: str, limit: int = 3, user_id: str | None = None
     ) -> List[str]:
         """Main entry point called by the OrchestratorAgent."""
         if not self._pool:
@@ -102,7 +112,7 @@ class IntegratedRAGService:
 
         # Async pgvector DB retrieval
         try:
-            return await VectorDBRepository.search_similar(db, vector, limit)
+            return await VectorDBRepository.search_similar(db, vector, limit, user_id=user_id)
         except Exception as e:
             logger.error("Database vector search failed", exc_info=True)
             raise RuntimeError("Failed to retrieve documents from DB.") from e
