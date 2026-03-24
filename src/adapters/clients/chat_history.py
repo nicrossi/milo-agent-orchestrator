@@ -65,6 +65,31 @@ class ChatHistoryRepository:
         return result.scalars().all()
 
     @staticmethod
+    async def get_recent_cross_session_memory(
+            session: AsyncSession,
+            user_id: str,
+            current_session_id: str,
+            limit: int = 12,
+    ) -> List[Dict[str, str]]:
+        """
+        Return recent messages from the same user across other sessions.
+        Useful as lightweight long-term memory between chats.
+        """
+        stmt = (
+            select(ChatMessage)
+            .where(
+                ChatMessage.user_id == user_id,
+                ChatMessage.session_id != current_session_id,
+            )
+            .order_by(ChatMessage.created_at.desc())
+            .limit(limit)
+        )
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+        rows = list(reversed(rows))
+        return [{"role": row.role, "content": row.content} for row in rows]
+
+    @staticmethod
     async def bind_or_validate_session_owner(
             session: AsyncSession,
             session_id: str,

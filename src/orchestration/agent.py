@@ -41,9 +41,33 @@ class OrchestratorAgent:
             logger.warning("Could not load milo_base_context.md; using inline fallback.")
         return _FALLBACK_BASE_CONTEXT
 
-    def _compose_context(self, rag_chunks: List[str]) -> List[str]:
+    @staticmethod
+    def _format_memory_block(memory_items: List[Dict[str, str]]) -> str:
+        if not memory_items:
+            return ""
+        lines = ["[User Cross-Chat Memory]"]
+        for item in memory_items:
+            role = "User" if item.get("role") == "user" else "Milo"
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            lines.append(f"{role}: {content}")
+        if len(lines) == 1:
+            return ""
+        return "\n".join(lines)
+
+    def _compose_context(
+        self,
+        rag_chunks: List[str],
+        cross_chat_memory: Optional[List[Dict[str, str]]] = None,
+    ) -> List[str]:
         # Always include Milo identity + behavior instructions.
-        return [self.base_context, *rag_chunks]
+        chunks: List[str] = [self.base_context]
+        memory_block = self._format_memory_block(cross_chat_memory or [])
+        if memory_block:
+            chunks.append(memory_block)
+        chunks.extend(rag_chunks)
+        return chunks
 
     async def process_query(
         self,
@@ -55,7 +79,7 @@ class OrchestratorAgent:
         logger.info("Processing stateless query for user=%s", user_id or "<none>")
         async with get_db_session() as db:
             rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        context_chunks = self._compose_context(rag_chunks)
+        context_chunks = self._compose_context(rag_chunks, [])
         return self.llm_adapter.generate_answer(query, context_chunks, history)
 
     async def process_session_stream(
@@ -68,10 +92,13 @@ class OrchestratorAgent:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         await self.history_repo.bind_or_validate_session_owner(db, session_id, user_id)
         history = await self._load_history(db, user_id, session_id)
+        cross_chat_memory = await self.history_repo.get_recent_cross_session_memory(
+            db, user_id, session_id, limit=12
+        )
         await self._persist_user_message(db, user_id, session_id, query)
 
         rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        context_chunks = self._compose_context(rag_chunks)
+        context_chunks = self._compose_context(rag_chunks, cross_chat_memory)
 
         async for chunk in self._stream_and_persist(
             db, user_id, session_id, query, context_chunks, history
