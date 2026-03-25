@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import text
 
 from src.core.models import Base
 
@@ -78,6 +79,35 @@ async def init_db() -> None:
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Lightweight idempotent migrations for existing deployments.
+            await conn.execute(
+                text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)")
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_chat_messages_user_session_created "
+                    "ON chat_messages(user_id, session_id, created_at)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS chat_session_ownership ("
+                    " session_id VARCHAR(255) PRIMARY KEY,"
+                    " user_id VARCHAR(255) NOT NULL,"
+                    " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                    ")"
+                )
+            )
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_chat_session_ownership_user_id "
+                    "ON chat_session_ownership(user_id)"
+                )
+            )
+            # Optional ownership metadata for user-scoped RAG retrieval.
+            await conn.execute(
+                text("ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(255)")
+            )
         logger.info("Database tables created successfully")
     except Exception:
         logger.critical("Failed to create database tables", exc_info=True)

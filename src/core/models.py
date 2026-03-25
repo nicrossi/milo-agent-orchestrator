@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -25,6 +25,8 @@ class ChatMessage(Base):
 
     # Groups messages belonging to the same conversation thread
     session_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Firebase UID owner of the chat turn.
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # Identifies the speaker. Must be either "user" or "model" to comply with Gemini API.
     role: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -42,6 +44,7 @@ class ChatMessage(Base):
     # This prevents full table scans as the database grows over time.
     __table_args__ = (
         Index("ix_chat_messages_session_created", "session_id", "created_at"),
+        Index("ix_chat_messages_user_session_created", "user_id", "session_id", "created_at"),
     )
 
     def __repr__(self) -> str:
@@ -53,7 +56,24 @@ class ChatMessage(Base):
         """
         content_length = len(self.content) if self.content else 0
         return (
-            f"<ChatMessage(id={self.id}, session={self.session_id}, "
+            f"<ChatMessage(id={self.id}, session={self.session_id}, user={self.user_id}, "
             f"role={self.role}, created_at={self.created_at}, "
             f"chars={content_length})>"
         )
+
+
+class ChatSessionOwnership(Base):
+    """
+    Binds each session_id to exactly one Firebase user.
+    Prevents cross-user access to the same chat thread identifier.
+    """
+
+    __tablename__ = "chat_session_ownership"
+
+    session_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_chat_session_ownership_user_id", "user_id"),)
