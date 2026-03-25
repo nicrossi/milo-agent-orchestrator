@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import AsyncIterator, Dict, List, Optional
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.adapters.clients.chat_history import ChatHistoryRepository
@@ -56,13 +57,81 @@ class OrchestratorAgent:
             return ""
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_user_profile_block(profile: Dict[str, str]) -> str:
+        if not profile:
+            return ""
+
+        lines = ["[Current User Profile]"]
+        if profile.get("name"):
+            lines.append(f"Name: {profile['name']}")
+        if profile.get("email"):
+            lines.append(f"Email: {profile['email']}")
+        if profile.get("roles"):
+            lines.append(f"Roles: {profile['roles']}")
+        if profile.get("user_id"):
+            lines.append(f"User ID: {profile['user_id']}")
+
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    async def _load_user_profile(self, db: AsyncSession, user_id: Optional[str]) -> Dict[str, str]:
+        if not user_id:
+            return {}
+
+        try:
+            result = await db.execute(
+                text(
+                    """
+                    SELECT
+                        u.id AS user_id,
+                        COALESCE(NULLIF(u.display_name, ''), '') AS display_name,
+                        COALESCE(NULLIF(u.email, ''), '') AS email,
+                        COALESCE(
+                            STRING_AGG(DISTINCT r.code, ', ' ORDER BY r.code)
+                            FILTER (WHERE r.code IS NOT NULL),
+                            ''
+                        ) AS roles
+                    FROM users u
+                    LEFT JOIN user_roles ur ON ur.user_id = u.id
+                    LEFT JOIN roles r ON r.id = ur.role_id
+                    WHERE u.id = :user_id
+                    GROUP BY u.id, u.display_name, u.email
+                    """
+                ),
+                {"user_id": user_id},
+            )
+            row = result.mappings().first()
+            if not row:
+                return {"user_id": user_id}
+
+            name = str(row.get("display_name") or "").strip()
+            email = str(row.get("email") or "").strip()
+            inferred_name = name or (email.split("@")[0] if email else "")
+
+            return {
+                "user_id": str(row.get("user_id") or user_id),
+                "name": inferred_name,
+                "email": email,
+                "roles": str(row.get("roles") or "").strip(),
+            }
+        except Exception:
+            # Important: if this query fails, asyncpg marks the transaction as failed.
+            # We must rollback before continuing with other queries on this session.
+            await db.rollback()
+            logger.warning("Could not load extended user profile context for user=%s", user_id)
+            return {"user_id": user_id}
+
     def _compose_context(
         self,
         rag_chunks: List[str],
+        user_profile: Optional[Dict[str, str]] = None,
         cross_chat_memory: Optional[List[Dict[str, str]]] = None,
     ) -> List[str]:
         # Always include Milo identity + behavior instructions.
         chunks: List[str] = [self.base_context]
+        profile_block = self._format_user_profile_block(user_profile or {})
+        if profile_block:
+            chunks.append(profile_block)
         memory_block = self._format_memory_block(cross_chat_memory or [])
         if memory_block:
             chunks.append(memory_block)
@@ -78,8 +147,9 @@ class OrchestratorAgent:
         """Stateless RAG pipeline."""
         logger.info("Processing stateless query for user=%s", user_id or "<none>")
         async with get_db_session() as db:
+            user_profile = await self._load_user_profile(db, user_id)
             rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        context_chunks = self._compose_context(rag_chunks, [])
+        context_chunks = self._compose_context(rag_chunks, user_profile, [])
         return self.llm_adapter.generate_answer(query, context_chunks, history)
 
     async def process_session_stream(
@@ -92,13 +162,14 @@ class OrchestratorAgent:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         await self.history_repo.bind_or_validate_session_owner(db, session_id, user_id)
         history = await self._load_history(db, user_id, session_id)
+        user_profile = await self._load_user_profile(db, user_id)
         cross_chat_memory = await self.history_repo.get_recent_cross_session_memory(
             db, user_id, session_id, limit=12
         )
         await self._persist_user_message(db, user_id, session_id, query)
 
         rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        context_chunks = self._compose_context(rag_chunks, cross_chat_memory)
+        context_chunks = self._compose_context(rag_chunks, user_profile, cross_chat_memory)
 
         async for chunk in self._stream_and_persist(
             db, user_id, session_id, query, context_chunks, history
