@@ -1,0 +1,24 @@
+{
+  "student_id": "string",
+  "topic": "string",
+  "metrics": {
+    "reflection_quality": {
+      "level": "red | yellow | green",
+      "justification": "string",
+      "evidence": ["string"],
+      "recommended_action": "string"
+    },
+    "calibration": {
+      "level": "red | yellow | green",
+      "justification": "string",
+      "evidence": ["string"],
+      "recommended_action": "string"
+    },
+    "contextual_transfer": {
+      "level": "red | yellow | green",
+      "justification": "string",
+      "evidence": ["string"],
+      "recommended_action": "string"
+    }
+  }
+}
