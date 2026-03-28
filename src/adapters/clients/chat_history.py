@@ -116,19 +116,6 @@ class ChatHistoryRepository:
         rows = list(reversed(rows))
         return [{"role": row.role, "content": row.content} for row in rows]
 
-    # @classmethod
-    # async def bind_or_validate_session_owner(
-    #         session: AsyncSession,
-    #         session_id: str,
-    #         user_id: str,
-    # ) -> None:
-    #     """
-    #     Validate session ownership. ChatSession now requires activity_id and student_id
-    #     at creation, so we do not auto-create sessions here. If the session exists,
-    #     ensure it belongs to the requesting user. If it does not exist, allow the
-    #     caller to proceed (empty-history behavior).
-    #     """
-    #     await ChatHistoryRepository.validate_session_owner(session, session_id, user_id)
 
     @classmethod
     async def validate_session_owner(
