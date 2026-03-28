@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, BackgroundTasks
 from sqlalchemy import text
 from src.core.database import get_db_session
 
@@ -66,6 +66,7 @@ async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require
 
     try:
         async with get_db_session() as db:
+            from src.core.models import User
             await db.execute(
                 text(
                     """
@@ -106,7 +107,7 @@ async def get_session_history(
         messages = [
             {
                 "id": str(row.id),
-                "session_id": row.session_id,
+                "session_id": str(row.session_id) if getattr(row, 'session_id', None) is not None else None,
                 "role": row.role,
                 "content": row.content,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -123,8 +124,8 @@ async def get_session_history(
         raise HTTPException(status_code=500, detail="Failed to load session history.")
 
 
-@router.websocket("/ws/{session_id}")
-async def process_stateful_websocket_chat(websocket: WebSocket, session_id: str):
+@router.websocket("/activities/{activity_id}")
+async def process_stateful_websocket_chat(websocket: WebSocket, activity_id: str, background_tasks: BackgroundTasks):
     """Delegates the full WebSocket lifecycle to a ChatSession with user isolation."""
     try:
         user = require_ws_user(websocket)
@@ -144,5 +145,5 @@ async def process_stateful_websocket_chat(websocket: WebSocket, session_id: str)
             pass
         return
 
-    session = ChatSession(websocket, session_id, user.uid, agent)
+    session = ChatSession(websocket, None, user.uid, agent, activity_id=activity_id, background_tasks=background_tasks)
     await session.run()

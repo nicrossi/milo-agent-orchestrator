@@ -3,7 +3,8 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from enum import Enum as PyEnum
 
 
 class Base(DeclarativeBase):
@@ -24,7 +25,7 @@ class ChatMessage(Base):
     )
 
     # Groups messages belonging to the same conversation thread
-    session_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     # Firebase UID owner of the chat turn.
     user_id: Mapped[str] = mapped_column(String(255), nullable=False)
 
@@ -39,9 +40,6 @@ class ChatMessage(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    # This composite index perfectly covers the query used in `chat_history.py`:
-    # `WHERE session_id = ? ORDER BY created_at DESC LIMIT ?`
-    # This prevents full table scans as the database grows over time.
     __table_args__ = (
         Index("ix_chat_messages_session_created", "session_id", "created_at"),
         Index("ix_chat_messages_user_session_created", "user_id", "session_id", "created_at"),
@@ -62,18 +60,56 @@ class ChatMessage(Base):
         )
 
 
-class ChatSessionOwnership(Base):
-    """
-    Binds each session_id to exactly one Firebase user.
-    Prevents cross-user access to the same chat thread identifier.
-    """
+class SessionStatus(str, PyEnum):
+    IN_PROGRESS = "IN_PROGRESS"
+    PENDING_EVALUATION = "PENDING_EVALUATION"
+    EVALUATED = "EVALUATED"
+    EVALUATION_FAILED = "EVALUATION_FAILED"
 
-    __tablename__ = "chat_session_ownership"
 
-    session_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
+class ActivityStatus(str, PyEnum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    ARCHIVED = "ARCHIVED"
 
-    __table_args__ = (Index("ix_chat_session_ownership_user_id", "user_id"),)
+
+class GoalAlignment(str, PyEnum):
+    ACHIEVED = "Achieved"
+    PARTIAL = "Partially Achieved"
+    NOT_ACHIEVED = "Not Achieved"
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class ReflectionActivity(Base):
+    __tablename__ = "reflection_activities"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    teacher_goal: Mapped[str] = mapped_column(Text, nullable=False)
+    context_description: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[ActivityStatus] = mapped_column(String(50), default=ActivityStatus.PUBLISHED)
+    created_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    activity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("reflection_activities.id"), nullable=False)
+    student_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    status: Mapped[SessionStatus] = mapped_column(String(50), default=SessionStatus.IN_PROGRESS)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class SessionMetric(Base):
+    __tablename__ = "session_metrics"
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), primary_key=True)
+    dors_level: Mapped[str] = mapped_column(String(255), nullable=True)
+    dors_score: Mapped[int] = mapped_column(nullable=True)
+    goal_status: Mapped[GoalAlignment] = mapped_column(String(50), nullable=True)
+    goal_score: Mapped[int] = mapped_column(nullable=True)
+    evidence_quote: Mapped[str] = mapped_column(Text, nullable=True)

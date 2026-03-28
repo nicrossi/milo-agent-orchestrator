@@ -1,18 +1,31 @@
 import asyncio
 import logging
-from typing import List, Dict
+import uuid
+from typing import List, Dict, Union, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.core.models import ChatMessage, ChatSessionOwnership
+from src.core.models import ChatMessage, ChatSession
 
 logger = logging.getLogger("milo-orchestrator.chat_history")
 
+SessionID = Union[str, uuid.UUID]
 
 class ChatHistoryRepository:
     """Data-access layer for persisting and retrieving chat messages."""
 
-    @staticmethod
+    @classmethod
+    def _to_uuid(cls, session_id: SessionID) -> Optional[uuid.UUID]:
+        """Helper method to safely coerce a string to a UUID."""
+        if isinstance(session_id, uuid.UUID):
+            return session_id
+        try:
+            return uuid.UUID(session_id)
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    @classmethod
     async def get_history(
+            cls,
             session: AsyncSession,
             user_id: str,
             session_id: str,
@@ -25,17 +38,21 @@ class ChatHistoryRepository:
         injected into the LLM prompt.
         """
         try:
+            session_uuid = cls._to_uuid(session_id)
+            if not session_uuid:
+                return []
+
             # Fetch the newest messages first to prevent amnesia
             stmt = (
                 select(ChatMessage)
-                .where(ChatMessage.session_id == session_id, ChatMessage.user_id == user_id)
+                .where(ChatMessage.session_id == session_uuid, ChatMessage.user_id == user_id)
                 .order_by(ChatMessage.created_at.desc())
                 .limit(limit)
             )
             result = await session.execute(stmt)
-            rows = result.scalars().all()
+            rows = list(result.scalars().all())
 
-            # Reverse the rows in-memory using to maintain chronological.
+            # Reverse the rows in-memory using to maintain chronological order.
             return [{"role": row.role, "content": row.content} for row in reversed(rows)]
         except asyncio.CancelledError:
             raise
@@ -47,25 +64,31 @@ class ChatHistoryRepository:
             )
             raise
 
-    @staticmethod
+    @classmethod
     async def get_history_records(
+            cls,
             session: AsyncSession,
             user_id: str,
             session_id: str,
             limit: int = 200,
     ) -> List[ChatMessage]:
         """Load chat rows for UI rendering (chronological order)."""
+        session_uuid = cls._to_uuid(session_id)
+        if not session_uuid:
+            return []
+
         stmt = (
             select(ChatMessage)
-            .where(ChatMessage.session_id == session_id, ChatMessage.user_id == user_id)
+            .where(ChatMessage.session_id == session_uuid, ChatMessage.user_id == user_id)
             .order_by(ChatMessage.created_at.asc())
             .limit(limit)
         )
         result = await session.execute(stmt)
-        return result.scalars().all()
+        return list(result.scalars().all())
 
-    @staticmethod
+    @classmethod
     async def get_recent_cross_session_memory(
+            cls,
             session: AsyncSession,
             user_id: str,
             current_session_id: str,
@@ -75,53 +98,28 @@ class ChatHistoryRepository:
         Return recent messages from the same user across other sessions.
         Useful as lightweight long-term memory between chats.
         """
+        current_session_uuid = cls._to_uuid(current_session_id)
+        if not current_session_uuid:
+            return []
+
         stmt = (
             select(ChatMessage)
             .where(
                 ChatMessage.user_id == user_id,
-                ChatMessage.session_id != current_session_id,
+                ChatMessage.session_id != current_session_uuid,
             )
             .order_by(ChatMessage.created_at.desc())
             .limit(limit)
         )
         result = await session.execute(stmt)
-        rows = result.scalars().all()
+        rows = list(result.scalars().all())
         rows = list(reversed(rows))
         return [{"role": row.role, "content": row.content} for row in rows]
 
-    @staticmethod
-    async def bind_or_validate_session_owner(
-            session: AsyncSession,
-            session_id: str,
-            user_id: str,
-    ) -> None:
-        """
-        Ensure a session belongs to exactly one user:
-        - If unbound, bind it to current user.
-        - If already bound to another user, deny access.
-        """
-        stmt = select(ChatSessionOwnership).where(ChatSessionOwnership.session_id == session_id)
-        result = await session.execute(stmt)
-        ownership = result.scalar_one_or_none()
 
-        if ownership is None:
-            session.add(ChatSessionOwnership(session_id=session_id, user_id=user_id))
-            await session.flush()
-            # Backfill legacy rows that pre-date user_id scoping.
-            legacy_stmt = (
-                select(ChatMessage)
-                .where(ChatMessage.session_id == session_id, ChatMessage.user_id.is_(None))
-            )
-            legacy_rows = (await session.execute(legacy_stmt)).scalars().all()
-            for row in legacy_rows:
-                row.user_id = user_id
-            return
-
-        if ownership.user_id != user_id:
-            raise PermissionError("This session belongs to another user.")
-
-    @staticmethod
+    @classmethod
     async def validate_session_owner(
+            cls,
             session: AsyncSession,
             session_id: str,
             user_id: str,
@@ -130,14 +128,19 @@ class ChatHistoryRepository:
         Validate session ownership without auto-binding.
         If session is unknown, allow empty-history behavior.
         """
-        stmt = select(ChatSessionOwnership).where(ChatSessionOwnership.session_id == session_id)
+        session_uuid = cls._to_uuid(session_id)
+        if not session_uuid:
+            return
+
+        stmt = select(ChatSession).where(ChatSession.id == session_uuid)
         result = await session.execute(stmt)
         ownership = result.scalar_one_or_none()
-        if ownership is not None and ownership.user_id != user_id:
+        if ownership is not None and getattr(ownership, "student_id", None) != user_id:
             raise PermissionError("This session belongs to another user.")
 
-    @staticmethod
+    @classmethod
     async def save_message(
+            cls,
             session: AsyncSession,
             user_id: str,
             session_id: str,
@@ -146,7 +149,11 @@ class ChatHistoryRepository:
     ) -> ChatMessage:
         """Persist a single chat message and flush so it gets a timestamp."""
         try:
-            msg = ChatMessage(session_id=session_id, user_id=user_id, role=role, content=content)
+            session_uuid = cls._to_uuid(session_id)
+            if not session_uuid:
+                raise ValueError("Invalid session_id; must be a UUID string or UUID")
+
+            msg = ChatMessage(session_id=session_uuid, user_id=user_id, role=role, content=content)
             session.add(msg)
             await session.flush()
             return msg
