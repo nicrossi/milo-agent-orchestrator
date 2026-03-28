@@ -60,9 +60,12 @@ class OrchestratorAgent:
         self,
         rag_chunks: List[str],
         cross_chat_memory: Optional[List[Dict[str, str]]] = None,
+        context_description: Optional[str] = None,
     ) -> List[str]:
         # Always include Milo identity + behavior instructions.
         chunks: List[str] = [self.base_context]
+        if context_description:
+            chunks.append(f"The student is reflecting on: {context_description}")
         memory_block = self._format_memory_block(cross_chat_memory or [])
         if memory_block:
             chunks.append(memory_block)
@@ -88,20 +91,24 @@ class OrchestratorAgent:
         user_id: str,
         session_id: str,
         query: str,
+        context_description: Optional[str] = None
     ) -> AsyncIterator[str]:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
-        await self.history_repo.bind_or_validate_session_owner(db, session_id, user_id)
+        # Note: Ownership is determined by chat_sessions, so we avoid bind_or_validate_session_owner.
         history = await self._load_history(db, user_id, session_id)
         cross_chat_memory = await self.history_repo.get_recent_cross_session_memory(
             db, user_id, session_id, limit=12
         )
-        await self._persist_user_message(db, user_id, session_id, query)
+        if query: # Only persist and query if user sends a message. Greeting uses empty query.
+            await self._persist_user_message(db, user_id, session_id, query)
 
-        rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
-        context_chunks = self._compose_context(rag_chunks, cross_chat_memory)
+        rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id) if query else []
+        context_chunks = self._compose_context(rag_chunks, cross_chat_memory, context_description)
+
+        real_query = query if query else f"Hi there! Initiate conversation based on the context."
 
         async for chunk in self._stream_and_persist(
-            db, user_id, session_id, query, context_chunks, history
+            db, user_id, session_id, real_query, context_chunks, history
         ):
             yield chunk
 

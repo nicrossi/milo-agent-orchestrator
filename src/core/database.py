@@ -128,6 +128,19 @@ async def init_db() -> None:
                 """)
             )
 
+            await conn.execute(
+                text("""
+                     CREATE TABLE IF NOT EXISTS session_metrics (
+                                                                    session_id UUID PRIMARY KEY,
+                                                                    dors_level VARCHAR(255),
+                                                                    dors_score INTEGER,
+                                                                    goal_status VARCHAR(50),
+                                                                    goal_score INTEGER,
+                                                                    evidence_quote TEXT
+                     )
+                     """)
+            )
+
             # Lightweight idempotent migrations for existing deployments.
             await conn.execute(
                 text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)")
