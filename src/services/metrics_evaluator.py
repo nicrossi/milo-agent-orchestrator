@@ -28,6 +28,7 @@ logger = logging.getLogger("milo-orchestrator.metrics_evaluator")
 
 _PROMPT_GUIDE_PATH = Path(__file__).parent.parent / "metrics" / "metrics_prompt_guide.md"
 _OUTPUT_SCHEMA_PATH = Path(__file__).parent.parent / "metrics" / "metrics_output_schema.json"
+_EXAMPLES_PATH = Path(__file__).parent.parent / "metrics" / "metrics_examples.md"
 
 
 def _build_evaluation_prompt(
@@ -37,9 +38,19 @@ def _build_evaluation_prompt(
 ) -> str:
     prompt_guide = _PROMPT_GUIDE_PATH.read_text()
     output_schema = _OUTPUT_SCHEMA_PATH.read_text()
+    examples = _EXAMPLES_PATH.read_text()
 
     return f"""
 {prompt_guide}
+
+---
+
+## Annotated reference examples
+
+Study these examples carefully before evaluating the new interaction.
+They show the correct classification for a range of student responses.
+
+{examples}
 
 ---
 
