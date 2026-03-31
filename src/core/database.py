@@ -131,12 +131,19 @@ async def init_db() -> None:
             await conn.execute(
                 text("""
                      CREATE TABLE IF NOT EXISTS session_metrics (
-                                                                    session_id UUID PRIMARY KEY,
-                                                                    dors_level VARCHAR(255),
-                                                                    dors_score INTEGER,
-                                                                    goal_status VARCHAR(50),
-                                                                    goal_score INTEGER,
-                                                                    evidence_quote TEXT
+                         session_id UUID PRIMARY KEY,
+                         reflection_quality_level VARCHAR(10),
+                         reflection_quality_justification TEXT,
+                         reflection_quality_evidence JSON,
+                         reflection_quality_action TEXT,
+                         calibration_level VARCHAR(10),
+                         calibration_justification TEXT,
+                         calibration_evidence JSON,
+                         calibration_action TEXT,
+                         contextual_transfer_level VARCHAR(10),
+                         contextual_transfer_justification TEXT,
+                         contextual_transfer_evidence JSON,
+                         contextual_transfer_action TEXT
                      )
                      """)
             )

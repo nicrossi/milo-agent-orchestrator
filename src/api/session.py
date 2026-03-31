@@ -11,7 +11,7 @@ from fastapi import WebSocket, BackgroundTasks
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from src.core.database import get_db_session
-from src.core.models import ChatSession as ChatSessionModel, SessionStatus, SessionMetric, GoalAlignment, ReflectionActivity
+from src.core.models import ChatSession as ChatSessionModel, SessionStatus, SessionMetric, ReflectionActivity
 from src.orchestration.agent import OrchestratorAgent
 
 logger = logging.getLogger("milo-orchestrator.session")
@@ -26,14 +26,8 @@ async def run_llm_evaluator(session_id: uuid.UUID):
         async with get_db_session() as db:
             session = await db.get(ChatSessionModel, session_id)
             if session:
-                metric = SessionMetric(
-                    session_id=session_id,
-                    dors_level="Dialogic Reflection",
-                    dors_score=75,
-                    goal_status=GoalAlignment.ACHIEVED,
-                    goal_score=80,
-                    evidence_quote="The student demonstrated understanding."
-                )
+                # TODO: Replace with real MetricsEvaluator call.
+                metric = SessionMetric(session_id=session_id)
                 db.add(metric)
                 session.status = SessionStatus.EVALUATED
                 await db.commit()

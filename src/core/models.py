@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from enum import Enum as PyEnum
@@ -73,10 +73,10 @@ class ActivityStatus(str, PyEnum):
     ARCHIVED = "ARCHIVED"
 
 
-class GoalAlignment(str, PyEnum):
-    ACHIEVED = "Achieved"
-    PARTIAL = "Partially Achieved"
-    NOT_ACHIEVED = "Not Achieved"
+class MetricLevel(str, PyEnum):
+    RED = "red"
+    YELLOW = "yellow"
+    GREEN = "green"
 
 
 class User(Base):
@@ -108,8 +108,21 @@ class ChatSession(Base):
 class SessionMetric(Base):
     __tablename__ = "session_metrics"
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"), primary_key=True)
-    dors_level: Mapped[str] = mapped_column(String(255), nullable=True)
-    dors_score: Mapped[int] = mapped_column(nullable=True)
-    goal_status: Mapped[GoalAlignment] = mapped_column(String(50), nullable=True)
-    goal_score: Mapped[int] = mapped_column(nullable=True)
-    evidence_quote: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Reflection Quality
+    reflection_quality_level: Mapped[str] = mapped_column(String(10), nullable=True)
+    reflection_quality_justification: Mapped[str] = mapped_column(Text, nullable=True)
+    reflection_quality_evidence: Mapped[list] = mapped_column(JSON, nullable=True)
+    reflection_quality_action: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Calibration between perception and performance
+    calibration_level: Mapped[str] = mapped_column(String(10), nullable=True)
+    calibration_justification: Mapped[str] = mapped_column(Text, nullable=True)
+    calibration_evidence: Mapped[list] = mapped_column(JSON, nullable=True)
+    calibration_action: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Contextual Transfer
+    contextual_transfer_level: Mapped[str] = mapped_column(String(10), nullable=True)
+    contextual_transfer_justification: Mapped[str] = mapped_column(Text, nullable=True)
+    contextual_transfer_evidence: Mapped[list] = mapped_column(JSON, nullable=True)
+    contextual_transfer_action: Mapped[str] = mapped_column(Text, nullable=True)

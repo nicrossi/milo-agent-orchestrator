@@ -8,7 +8,7 @@ from src.core.auth import AuthenticatedUser, require_http_user
 from src.core.models import ReflectionActivity, ChatSession, SessionMetric, User
 from src.schemas.activities import (
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
-    ActivityDashboardResponse, StudentSessionResult, ActivityStatus
+    ActivityDashboardResponse, StudentSessionResult, MetricResult, ActivityStatus
 )
 
 router = APIRouter(prefix="/activities", tags=["Activities"])
@@ -69,11 +69,24 @@ async def get_activity_results(
                 student_name=display_name,
                 status=chat_session.status,
                 started_at=chat_session.started_at,
-                dors_level=metric.dors_level if metric else None,
-                dors_score=metric.dors_score if metric else None,
-                goal_status=metric.goal_status if metric else None,
-                goal_score=metric.goal_score if metric else None,
-                evidence_quote=metric.evidence_quote if metric else None
+                reflection_quality=MetricResult(
+                    level=metric.reflection_quality_level,
+                    justification=metric.reflection_quality_justification,
+                    evidence=metric.reflection_quality_evidence,
+                    recommended_action=metric.reflection_quality_action,
+                ) if metric and metric.reflection_quality_level else None,
+                calibration=MetricResult(
+                    level=metric.calibration_level,
+                    justification=metric.calibration_justification,
+                    evidence=metric.calibration_evidence,
+                    recommended_action=metric.calibration_action,
+                ) if metric and metric.calibration_level else None,
+                contextual_transfer=MetricResult(
+                    level=metric.contextual_transfer_level,
+                    justification=metric.contextual_transfer_justification,
+                    evidence=metric.contextual_transfer_evidence,
+                    recommended_action=metric.contextual_transfer_action,
+                ) if metric and metric.contextual_transfer_level else None,
             ))
 
         return ActivityDashboardResponse(

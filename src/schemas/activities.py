@@ -15,10 +15,10 @@ class SessionStatus(str, Enum):
     EVALUATED = "EVALUATED"
     EVALUATION_FAILED = "EVALUATION_FAILED"
 
-class GoalAlignment(str, Enum):
-    ACHIEVED = "Achieved"
-    PARTIAL = "Partially Achieved"
-    NOT_ACHIEVED = "Not Achieved"
+class MetricLevel(str, Enum):
+    RED = "red"
+    YELLOW = "yellow"
+    GREEN = "green"
 
 # ------------------------------------------------------------------
 # REQUEST PAYLOADS (What the frontend sends to the backend)
@@ -52,6 +52,13 @@ class ActivityStudentResponse(BaseModel):
 class ActivityTeacherResponse(ActivityStudentResponse):
     teacher_goal: str
 
+class MetricResult(BaseModel):
+    level: MetricLevel
+    justification: str
+    evidence: List[str]
+    recommended_action: str
+
+
 class StudentSessionResult(BaseModel):
     """
     Represents a single student's attempt at an activity.
@@ -62,13 +69,11 @@ class StudentSessionResult(BaseModel):
     student_name: str  # Joined from users.display_name
     status: SessionStatus
     started_at: datetime
-    
-    # AI Metrics (These are Optional because the session might still be IN_PROGRESS)
-    dors_level: Optional[str] = Field(None, description="e.g., 'Dialogic Reflection'")
-    dors_score: Optional[int] = Field(None, description="e.g., 75")
-    goal_status: Optional[GoalAlignment] = None
-    goal_score: Optional[int] = None
-    evidence_quote: Optional[str] = None
+
+    # AI Metrics (None when the session is still IN_PROGRESS or evaluation failed)
+    reflection_quality: Optional[MetricResult] = None
+    calibration: Optional[MetricResult] = None
+    contextual_transfer: Optional[MetricResult] = None
 
     class Config:
         from_attributes = True
