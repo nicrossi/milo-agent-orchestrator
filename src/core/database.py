@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy import text
 
 from src.core.models import Base
 
@@ -77,6 +78,103 @@ async def init_db() -> None:
 
     try:
         async with engine.begin() as conn:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        id VARCHAR(128) PRIMARY KEY,
+                        email VARCHAR(255),
+                        display_name VARCHAR(255)
+                    )
+                """)
+            )
+
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS reflection_activities (
+                        id UUID PRIMARY KEY,
+                        title VARCHAR(255) NOT NULL,
+                        teacher_goal TEXT NOT NULL,
+                        context_description TEXT NOT NULL,
+                        status VARCHAR(50) NOT NULL,
+                        created_by_id VARCHAR(255) NOT NULL
+                    )
+                """)
+            )
+
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS chat_sessions (
+                        id UUID PRIMARY KEY,
+                        activity_id UUID NOT NULL,
+                        student_id VARCHAR(255) NOT NULL,
+                        status VARCHAR(50) NOT NULL,
+                        started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+                    )
+                """)
+            )
+
+            await conn.execute(
+                text("""
+                    CREATE TABLE IF NOT EXISTS chat_messages (
+                        id UUID PRIMARY KEY,
+                        session_id UUID NOT NULL,
+                        user_id VARCHAR(255) NOT NULL,
+                        role VARCHAR(20) NOT NULL,
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+                    )
+                """)
+            )
+
+            await conn.execute(
+                text("""
+                     CREATE TABLE IF NOT EXISTS session_metrics (
+                                                                    session_id UUID PRIMARY KEY,
+                                                                    dors_level VARCHAR(255),
+                                                                    dors_score INTEGER,
+                                                                    goal_status VARCHAR(50),
+                                                                    goal_score INTEGER,
+                                                                    evidence_quote TEXT
+                     )
+                     """)
+            )
+
+            # Lightweight idempotent migrations for existing deployments.
+            await conn.execute(
+                text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)")
+            )
+
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_chat_messages_user_session_created "
+                    "ON chat_messages(user_id, session_id, created_at)"
+                )
+            )
+
+            await conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS chat_session_ownership ("
+                    " session_id VARCHAR(255) PRIMARY KEY,"
+                    " user_id VARCHAR(255) NOT NULL,"
+                    " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
+                    ")"
+                )
+            )
+
+            await conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_chat_session_ownership_user_id "
+                    "ON chat_session_ownership(user_id)"
+                )
+            )
+
+            # Optional ownership metadata for user-scoped RAG retrieval.
+            await conn.execute(
+                text("ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(255)")
+            )
+
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables created successfully")
     except Exception:
