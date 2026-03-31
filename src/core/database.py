@@ -178,9 +178,14 @@ async def init_db() -> None:
             )
 
             # Optional ownership metadata for user-scoped RAG retrieval.
-            await conn.execute(
-                text("ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(255)")
-            )
+            # document_embeddings is owned by milo-ingest; skip gracefully if absent.
+            await conn.execute(text("SAVEPOINT sp_alter_embeddings"))
+            try:
+                await conn.execute(
+                    text("ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS owner_user_id VARCHAR(255)")
+                )
+            except Exception:
+                await conn.execute(text("ROLLBACK TO SAVEPOINT sp_alter_embeddings"))
 
             await conn.run_sync(Base.metadata.create_all)
         logger.info("Database tables created successfully")
