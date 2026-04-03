@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.adapters.clients.chat_history import ChatHistoryRepository
 from src.adapters.llm.gemini import GeminiAdapter
 from src.core.database import get_db_session
+from src.schemas.chat import MessageDTO
 from src.services.rag import IntegratedRAGService
 
 logger = logging.getLogger("milo-orchestrator.agent")
@@ -42,13 +43,13 @@ class OrchestratorAgent:
         return _FALLBACK_BASE_CONTEXT
 
     @staticmethod
-    def _format_memory_block(memory_items: List[Dict[str, str]]) -> str:
+    def _format_memory_block(memory_items: List[MessageDTO]) -> str:
         if not memory_items:
             return ""
         lines = ["[User Cross-Chat Memory]"]
         for item in memory_items:
-            role = "User" if item.get("role") == "user" else "Milo"
-            content = str(item.get("content") or "").strip()
+            role = "User" if item.role == "user" else "Milo"
+            content = str(item.content or "").strip()
             if not content:
                 continue
             lines.append(f"{role}: {content}")
@@ -59,7 +60,7 @@ class OrchestratorAgent:
     def _compose_context(
         self,
         rag_chunks: List[str],
-        cross_chat_memory: Optional[List[Dict[str, str]]] = None,
+        cross_chat_memory: Optional[List[MessageDTO]] = None,
         context_description: Optional[str] = None,
     ) -> List[str]:
         # Always include Milo identity + behavior instructions.
@@ -75,7 +76,7 @@ class OrchestratorAgent:
     async def process_query(
         self,
         query: str,
-        history: Optional[List[Dict[str, str]]] = None,
+        history: Optional[List[MessageDTO]] = None,
         user_id: Optional[str] = None,
     ) -> str:
         """Stateless RAG pipeline."""
@@ -84,6 +85,10 @@ class OrchestratorAgent:
             rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id)
         context_chunks = self._compose_context(rag_chunks, [])
         return self.llm_adapter.generate_answer(query, context_chunks, history)
+
+    def generate_evaluation(self, prompt: str) -> str:
+        """Generate evaluation of a session using the underlying LLM adapter."""
+        return self.llm_adapter.generate_evaluation(prompt)
 
     async def process_session_stream(
         self,
@@ -114,7 +119,7 @@ class OrchestratorAgent:
 
     async def _load_history(
         self, db: AsyncSession, user_id: str, session_id: str
-    ) -> List[Dict[str, str]]:
+    ) -> List[MessageDTO]:
         history = await self.history_repo.get_history(db, user_id, session_id)
         logger.info(
             "Session '%s': loaded %d previous messages for user=%s.",
@@ -137,7 +142,7 @@ class OrchestratorAgent:
         session_id: str,
         query: str,
         context_chunks: List[str],
-        history: List[Dict[str, str]],
+        history: List[MessageDTO],
     ) -> AsyncIterator[str]:
         collected: List[str] = []
         interrupted = False
@@ -178,3 +183,21 @@ class OrchestratorAgent:
                 session_id,
                 exc_info=True,
             )
+
+_agent_instance = None
+
+def get_agent() -> OrchestratorAgent | None:
+    """FastAPI Dependency that provides the OrchestratorAgent."""
+    global _agent_instance
+
+    if _agent_instance is not None:
+        return _agent_instance
+
+    try:
+        from src.main import rag_service
+
+        _agent_instance = OrchestratorAgent(rag_service=rag_service)
+        return _agent_instance
+
+    except Exception as err:
+        logger.error("CRITICAL: OrchestratorAgent failed to initialise: %s", err, exc_info=True)
