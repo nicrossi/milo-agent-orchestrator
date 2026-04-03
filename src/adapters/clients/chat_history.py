@@ -5,6 +5,7 @@ from typing import List, Dict, Union, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.models import ChatMessage, ChatSession
+from src.schemas.chat import MessageDTO, UIMessageDTO
 
 logger = logging.getLogger("milo-orchestrator.chat_history")
 
@@ -30,12 +31,11 @@ class ChatHistoryRepository:
             user_id: str,
             session_id: str,
             limit: int = 50,
-    ) -> List[Dict[str, str]]:
+    ) -> List[MessageDTO]:
         """
         Load the most recent messages for a session, ordered chronologically.
 
-        Returns a list of {"role": ..., "content": ...} dicts ready to be
-        injected into the LLM prompt.
+        Returns a list of MessageDTOs ready to be injected into the LLM prompt.
         """
         try:
             session_uuid = cls._to_uuid(session_id)
@@ -53,7 +53,7 @@ class ChatHistoryRepository:
             rows = list(result.scalars().all())
 
             # Reverse the rows in-memory using to maintain chronological order.
-            return [{"role": row.role, "content": row.content} for row in reversed(rows)]
+            return [MessageDTO(role=row.role, content=row.content) for row in reversed(rows)]
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -71,7 +71,7 @@ class ChatHistoryRepository:
             user_id: str,
             session_id: str,
             limit: int = 200,
-    ) -> List[ChatMessage]:
+    ) -> List[UIMessageDTO]:
         """Load chat rows for UI rendering (chronological order)."""
         session_uuid = cls._to_uuid(session_id)
         if not session_uuid:
@@ -84,7 +84,16 @@ class ChatHistoryRepository:
             .limit(limit)
         )
         result = await session.execute(stmt)
-        return list(result.scalars().all())
+        return [
+            UIMessageDTO(
+                id=row.id,
+                session_id=row.session_id,
+                role=row.role,
+                content=row.content,
+                created_at=row.created_at,
+            )
+            for row in result.scalars().all()
+        ]
 
     @classmethod
     async def get_recent_cross_session_memory(
@@ -93,7 +102,7 @@ class ChatHistoryRepository:
             user_id: str,
             current_session_id: str,
             limit: int = 12,
-    ) -> List[Dict[str, str]]:
+    ) -> List[MessageDTO]:
         """
         Return recent messages from the same user across other sessions.
         Useful as lightweight long-term memory between chats.
@@ -114,7 +123,39 @@ class ChatHistoryRepository:
         result = await session.execute(stmt)
         rows = list(result.scalars().all())
         rows = list(reversed(rows))
-        return [{"role": row.role, "content": row.content} for row in rows]
+        return [MessageDTO(role=row.role, content=row.content) for row in rows]
+        
+    @classmethod
+    async def get_session_messages_for_eval(
+            cls,
+            session: AsyncSession,
+            session_id: uuid.UUID,
+    ) -> List[MessageDTO]:
+        """Load completely all chronologically ordered messages for evaluation purposes."""
+        stmt = (
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at.asc())
+        )
+        result = await session.execute(stmt)
+        return [MessageDTO(role=row.role, content=row.content) for row in result.scalars().all()]
+
+    @classmethod
+    async def get_activity_messages_for_eval(
+            cls,
+            session: AsyncSession,
+            activity_id: str,
+            user_id: str,
+    ) -> List[MessageDTO]:
+        """Load completely all chronologically ordered messages for evaluation purposes for an activity."""
+        stmt = (
+            select(ChatMessage)
+            .join(ChatSession, ChatMessage.session_id == ChatSession.id)
+            .where(ChatSession.activity_id == activity_id, ChatMessage.user_id == user_id)
+            .order_by(ChatMessage.created_at.asc())
+        )
+        result = await session.execute(stmt)
+        return [MessageDTO(role=row.role, content=row.content) for row in result.scalars().all()]
 
 
     @classmethod

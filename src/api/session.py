@@ -13,24 +13,20 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from src.core.database import get_db_session
 from src.core.models import ChatSession as ChatSessionModel, SessionStatus, SessionMetric, ReflectionActivity
 from src.orchestration.agent import OrchestratorAgent
+from src.services.metrics_evaluator import evaluate_session
 
 logger = logging.getLogger("milo-orchestrator.session")
 
 _IDLE_TIMEOUT_SECONDS = 3600.0
 
 
-async def run_llm_evaluator(session_id: uuid.UUID):
+async def run_llm_evaluator(session_id: uuid.UUID, agent: OrchestratorAgent,) -> None:
     try:
-        # TODO: Implement the actual LLM call using the generic prompt for MVP.
-        # For now, simulate success and save placeholder metric.
-        async with get_db_session() as db:
-            session = await db.get(ChatSessionModel, session_id)
-            if session:
-                # TODO: Replace with real MetricsEvaluator call.
-                metric = SessionMetric(session_id=session_id)
-                db.add(metric)
-                session.status = SessionStatus.EVALUATED
-                await db.commit()
+        if not agent:
+            logger.error("No agent available for evaluation.")
+            return
+        
+        await evaluate_session(session_id, agent)
     except Exception as e:
         logger.error(f"Evaluating session {session_id} failed: {e}")
         async with get_db_session() as db:
@@ -119,7 +115,7 @@ class ChatSession:
                     await db.commit()
 
             # Non-blocking background task scheduling
-            asyncio.create_task(run_llm_evaluator(self._session_id_uuid))
+            asyncio.create_task(run_llm_evaluator(self._session_id_uuid, self._agent))
         except Exception as e:
             logger.error(f"Failed to wrap up session {self._session_id}: {e}")
 
