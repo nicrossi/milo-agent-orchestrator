@@ -13,10 +13,13 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from src.core.database import get_db_session
 from src.core.models import ChatSession as ChatSessionModel, SessionStatus, SessionMetric, ReflectionActivity
 from src.orchestration.agent import OrchestratorAgent
+from src.policy.engine import PolicyEngine
+from src.policy.types import FSMState, PolicyContext
 
 logger = logging.getLogger("milo-orchestrator.session")
 
 _IDLE_TIMEOUT_SECONDS = 3600.0
+_policy_engine = PolicyEngine()  # stateless singleton — shared across all sessions
 
 
 async def run_llm_evaluator(session_id: uuid.UUID):
@@ -58,6 +61,10 @@ class ChatSession:
         self._session_id = None
         self._context_description = None
         self._created_tasks: List[asyncio.Task] = []
+        # Policy state — in-memory for the lifetime of this WebSocket connection.
+        self._fsm_state: FSMState = FSMState.PLANNING
+        self._recent_question_ids: List[str] = []
+        self._last_question_text: str = ""
 
     async def run(self) -> None:
         """Main entry point for the WebSocket handler."""
@@ -87,6 +94,17 @@ class ChatSession:
         """Helper to initialize the database chat session."""
         try:
             activity_uuid = uuid.UUID(self._activity_id)
+        except (ValueError, AttributeError):
+            # Non-UUID activity_id (e.g. mock IDs like "c1") — run without DB persistence.
+            logger.warning(
+                "activity_id '%s' is not a valid UUID — running in stateless mode.",
+                self._activity_id,
+            )
+            self._session_id_uuid = None
+            self._session_id = str(uuid.uuid4())
+            return True
+
+        try:
             async with get_db_session() as db:
                 db_session = ChatSessionModel(
                     activity_id=activity_uuid,
@@ -166,19 +184,93 @@ class ChatSession:
             pass
 
     async def _process_turn(self, user_text: str) -> None:
+        # Policy loop — 6 steps:
+        # 1. Load history to derive turn count (completed exchange pairs).
+        # 2. Evaluate policy (FSM transition + question selection + rules).
+        # 3. Stream LLM response with policy directives injected into context.
+        # 4. Run output interceptors on the accumulated full response.
+        # 5. Update in-memory policy state.
+        # 6. Send "done" frame carrying policy metadata.
         try:
+            # Step 1: derive turn count from history length
+            prompt_directives: List[str] = []
+            decision = None
+            try:
+                async with get_db_session() as db:
+                    history = await self._agent.history_repo.get_history(
+                        db, self._user_id, self._session_id
+                    )
+                turn_count = len(history) // 2
+
+                # Step 2: evaluate policy
+                ctx = PolicyContext(
+                    current_state=self._fsm_state,
+                    turn_count=turn_count,
+                    recent_question_ids=self._recent_question_ids.copy(),
+                    user_message=user_text,
+                )
+                decision = _policy_engine.evaluate(ctx)
+                prompt_directives = decision.plan.prompt_directives
+
+                logger.info(
+                    "Session '%s': policy — %s→%s, q=%s, rules=%s",
+                    self._session_id,
+                    ctx.current_state.value,
+                    decision.next_state.value,
+                    decision.plan.question_id,
+                    decision.applied_rules,
+                )
+            except Exception as exc:
+                # Graceful degradation: log and continue with empty directives.
+                logger.error(
+                    "Session '%s': policy evaluate() failed — degrading gracefully. Error: %s",
+                    self._session_id, exc, exc_info=True,
+                )
+
+            # Step 3: stream with directives injected
+            accumulated: List[str] = []
             async with get_db_session() as db:
                 stream = self._agent.process_session_stream(
-                    db, self._user_id, self._session_id, user_text, self._context_description
+                    db, self._user_id, self._session_id, user_text,
+                    self._context_description,
+                    prompt_directives=prompt_directives,
                 )
                 async for chunk in stream:
+                    accumulated.append(chunk)
                     if not await self._send_json({"type": "chunk", "text": chunk}):
                         logger.info(
                             "Session '%s': client dropped mid-stream - halting.", self._session_id
                         )
                         return
 
-            await self._send_json({"type": "done"})
+            # Step 4: output interception
+            if decision is not None:
+                full_response = "".join(accumulated)
+                was_intercepted, final_text = _policy_engine.check_output(full_response, decision)
+                if was_intercepted:
+                    correction = final_text[len(full_response):]
+                    await self._send_json({"type": "chunk", "text": correction})
+                    logger.info(
+                        "Session '%s': interceptor fired — correction appended.", self._session_id
+                    )
+
+                # Step 5: update policy state
+                self._fsm_state = decision.next_state
+                self._recent_question_ids.append(decision.plan.question_id)
+                self._last_question_text = decision.plan.question_text
+
+                # Step 6: done with policy metadata
+                await self._send_json({
+                    "type": "done",
+                    "policy": {
+                        "state": decision.next_state.value,
+                        "question_id": decision.plan.question_id,
+                        "applied_rules": decision.applied_rules,
+                    },
+                })
+            else:
+                await self._send_json({"type": "done"})
+
         except PermissionError:
             await self._send_error("No tenes permiso para acceder a esta conversacion.")
         except RuntimeError as exc:

@@ -61,6 +61,7 @@ class OrchestratorAgent:
         rag_chunks: List[str],
         cross_chat_memory: Optional[List[Dict[str, str]]] = None,
         context_description: Optional[str] = None,
+        prompt_directives: Optional[List[str]] = None,
     ) -> List[str]:
         # Always include Milo identity + behavior instructions.
         chunks: List[str] = [self.base_context]
@@ -70,6 +71,9 @@ class OrchestratorAgent:
         if memory_block:
             chunks.append(memory_block)
         chunks.extend(rag_chunks)
+        if prompt_directives:
+            # Injected last for salience; populated by PolicyEngine.evaluate()
+            chunks.append("\n".join(prompt_directives))
         return chunks
 
     async def process_query(
@@ -91,7 +95,8 @@ class OrchestratorAgent:
         user_id: str,
         session_id: str,
         query: str,
-        context_description: Optional[str] = None
+        context_description: Optional[str] = None,
+        prompt_directives: Optional[List[str]] = None,
     ) -> AsyncIterator[str]:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         # Note: Ownership is determined by chat_sessions, so we avoid bind_or_validate_session_owner.
@@ -103,7 +108,10 @@ class OrchestratorAgent:
             await self._persist_user_message(db, user_id, session_id, query)
 
         rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id) if query else []
-        context_chunks = self._compose_context(rag_chunks, cross_chat_memory, context_description)
+        context_chunks = self._compose_context(
+            rag_chunks, cross_chat_memory, context_description,
+            prompt_directives=prompt_directives or [],
+        )
 
         real_query = query if query else f"Hi there! Initiate conversation based on the context."
 
