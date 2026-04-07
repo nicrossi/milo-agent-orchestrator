@@ -165,7 +165,7 @@ class ChatSession:
         try:
             async with get_db_session() as db:
                 stream = self._agent.process_session_stream(
-                    db, self._user_id, self._session_id, user_text, self._context_description
+                    db, self._user_id, self._session_id, user_text, self._context_description, self._activity_id
                 )
                 async for chunk in stream:
                     if not await self._send_json({"type": "chunk", "text": chunk}):

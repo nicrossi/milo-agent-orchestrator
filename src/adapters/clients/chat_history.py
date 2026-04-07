@@ -102,6 +102,7 @@ class ChatHistoryRepository:
             user_id: str,
             current_session_id: str,
             limit: int = 12,
+            activity_id: Optional[str] = None,
     ) -> List[MessageDTO]:
         """
         Return recent messages from the same user across other sessions.
@@ -117,9 +118,14 @@ class ChatHistoryRepository:
                 ChatMessage.user_id == user_id,
                 ChatMessage.session_id != current_session_uuid,
             )
-            .order_by(ChatMessage.created_at.desc())
-            .limit(limit)
         )
+
+        if activity_id:
+            activity_uuid = cls._to_uuid(activity_id)
+            if activity_uuid:
+                stmt = stmt.join(ChatSession, ChatMessage.session_id == ChatSession.id).where(ChatSession.activity_id == activity_uuid)
+
+        stmt = stmt.order_by(ChatMessage.created_at.desc()).limit(limit)
         result = await session.execute(stmt)
         rows = list(result.scalars().all())
         rows = list(reversed(rows))
