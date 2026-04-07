@@ -96,13 +96,14 @@ class OrchestratorAgent:
         user_id: str,
         session_id: str,
         query: str,
-        context_description: Optional[str] = None
+        context_description: Optional[str] = None,
+        activity_id: Optional[str] = None
     ) -> AsyncIterator[str]:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         # Note: Ownership is determined by chat_sessions, so we avoid bind_or_validate_session_owner.
         history = await self._load_history(db, user_id, session_id)
         cross_chat_memory = await self.history_repo.get_recent_cross_session_memory(
-            db, user_id, session_id, limit=12
+            db, user_id, session_id, limit=12, activity_id=activity_id
         )
         if query: # Only persist and query if user sends a message. Greeting uses empty query.
             await self._persist_user_message(db, user_id, session_id, query)
