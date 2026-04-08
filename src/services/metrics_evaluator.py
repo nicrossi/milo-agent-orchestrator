@@ -117,7 +117,9 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             # Dump the transcript to a file for debugging
             try:
                 import os
-                filename = f"{session.student_id}_{activity.id}.txt"
+                debug_dir = "debug_transcripts"
+                os.makedirs(debug_dir, exist_ok=True)
+                filename = os.path.join(debug_dir, f"{session.student_id}_{activity.id}.txt")
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(transcript)
                 logger.info("Dumped transcript to %s", filename)

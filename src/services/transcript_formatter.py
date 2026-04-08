@@ -21,9 +21,4 @@ class TranscriptFormatter:
         
         formatted_transcript = "\n\n".join(lines)
 
-        # Dump the transcript to a file for debugging purposes
-        file_name = f"{user}_{activity_id}_transcript.txt"
-        with open(file_name, "w") as file:
-            file.write(formatted_transcript)
-
         return formatted_transcript
