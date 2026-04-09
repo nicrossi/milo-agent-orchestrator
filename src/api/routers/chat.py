@@ -39,10 +39,14 @@ async def process_stateless_chat(
 
 
 @router.post("/bootstrap-user")
-async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require_http_user)):
+async def bootstrap_authenticated_user(
+    user: AuthenticatedUser = Depends(require_http_user),
+    role: Optional[str] = None,
+):
     """
     Ensure the authenticated Firebase user exists in relational users table.
     Safe to call repeatedly (idempotent upsert).
+    Accepts an optional `role` query param ("teacher" or "student", default "student").
     """
     display_name = str(
         user.claims.get("name")
@@ -50,6 +54,7 @@ async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require
         or (user.email.split("@")[0] if user.email else "")
     ).strip()
     email = str(user.email or "").strip() or f"{user.uid}@milo.local"
+    user_role = role if role in ("teacher", "student") else "student"
 
     try:
         async with get_db_session() as db:
@@ -57,16 +62,17 @@ async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require
             await db.execute(
                 text(
                     """
-                    INSERT INTO users (id, email, display_name)
-                    VALUES (:id, :email, :display_name)
+                    INSERT INTO users (id, email, display_name, role)
+                    VALUES (:id, :email, :display_name, :role)
                     ON CONFLICT (id) DO UPDATE
                     SET email = EXCLUDED.email,
-                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name)
+                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name),
+                        role = EXCLUDED.role
                     """
                 ),
-                {"id": user.uid, "email": email, "display_name": display_name},
+                {"id": user.uid, "email": email, "display_name": display_name, "role": user_role},
             )
-        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name}
+        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name, "role": user_role}
     except Exception:
         logger.error("Failed to bootstrap authenticated user into users table.", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to bootstrap user.")
