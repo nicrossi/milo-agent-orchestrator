@@ -54,9 +54,9 @@ class ActivityTeacherResponse(ActivityStudentResponse):
 
 class MetricResult(BaseModel):
     level: MetricLevel
-    justification: str
-    evidence: List[str]
-    recommended_action: str
+    justification: Optional[str] = None
+    evidence: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
 
 
 class StudentSessionResult(BaseModel):
@@ -84,4 +84,3 @@ class ActivityDashboardResponse(BaseModel):
     """
     activity: ActivityTeacherResponse
     results: List[StudentSessionResult]
-
