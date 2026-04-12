@@ -34,11 +34,17 @@ internal reasoning capabilities.
 
 class GeminiAdapter(BaseLLMAdapter):
     def __init__(self) -> None:
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable is required")
+        vertex_project = os.getenv("VERTEX_PROJECT")
+        vertex_location = os.getenv("VERTEX_LOCATION", "us-central1")
 
-        self.client = genai.Client(api_key=api_key)
+        if vertex_project:
+            self.client = genai.Client(vertexai=True, project=vertex_project, location=vertex_location)
+        else:
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("Either VERTEX_PROJECT or GOOGLE_API_KEY environment variable is required")
+            self.client = genai.Client(api_key=api_key)
+
         self.model_name = os.getenv("LLM_MODEL", "gemini-2.5-flash")
         self._config = types.GenerateContentConfig(
             temperature=0.2,
