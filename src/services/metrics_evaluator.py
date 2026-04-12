@@ -103,29 +103,8 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             if not activity:
                 raise ValueError(f"Activity {session.activity_id} not found")
 
-            # Load messages structured specifically for the LLM context
-            from src.adapters.clients.chat_history import ChatHistoryRepository
-            from src.services.transcript_formatter import TranscriptFormatter
+            transcript = session.transcript.strip() if session.transcript else ""
             
-            messages = await ChatHistoryRepository.get_activity_messages_for_eval(db, activity.id, session.student_id)
-
-            if not messages:
-                raise ValueError(f"No messages found for activity {activity.id}")
-
-            transcript = TranscriptFormatter.format_transcript(messages, session.student_id, activity.id)
-            
-            # Dump the transcript to a file for debugging
-            try:
-                import os
-                debug_dir = "debug_transcripts"
-                os.makedirs(debug_dir, exist_ok=True)
-                filename = os.path.join(debug_dir, f"{session.student_id}_{activity.id}.txt")
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(transcript)
-                logger.info("Dumped transcript to %s", filename)
-            except Exception as e:
-                logger.warning("Failed to dump transcript: %s", e)
-
             prompt = _build_evaluation_prompt(
                 transcript=transcript,
                 teacher_goal=activity.teacher_goal,

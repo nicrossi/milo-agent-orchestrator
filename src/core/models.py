@@ -104,6 +104,7 @@ class ChatSession(Base):
     student_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
     status: Mapped[SessionStatus] = mapped_column(String(50), default=SessionStatus.IN_PROGRESS)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    transcript: Mapped[str] = mapped_column(Text, server_default="", default="")
 
 
 class SessionMetric(Base):

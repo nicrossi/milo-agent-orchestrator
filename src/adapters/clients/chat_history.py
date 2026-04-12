@@ -202,6 +202,18 @@ class ChatHistoryRepository:
 
             msg = ChatMessage(session_id=session_uuid, user_id=user_id, role=role, content=content)
             session.add(msg)
+            
+            chat_session = await session.get(ChatSession, session_uuid)
+            if chat_session:
+                speaker = "Student" if role.lower() == "user" else "Milo"
+                text_block = f"{speaker}: {content.strip()}\n\n"
+                
+                if chat_session.transcript is None:
+                    chat_session.transcript = text_block
+                else:
+                    chat_session.transcript += text_block
+                session.add(chat_session)
+
             await session.flush()
             return msg
         except asyncio.CancelledError:

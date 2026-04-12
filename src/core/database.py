@@ -111,7 +111,8 @@ async def init_db() -> None:
                         activity_id UUID NOT NULL,
                         student_id VARCHAR(255) NOT NULL,
                         status VARCHAR(50) NOT NULL,
-                        started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+                        started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+                        transcript TEXT NOT NULL DEFAULT ''
                     )
                 """)
             )
@@ -155,6 +156,9 @@ async def init_db() -> None:
             )
             await conn.execute(
                 text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)")
+            )
+            await conn.execute(
+                text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT ''")
             )
 
             await conn.execute(
