@@ -4,8 +4,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 import firebase_admin
-from fastapi import Header, HTTPException, WebSocket
+from fastapi import Header, HTTPException, WebSocket, Depends
 from firebase_admin import auth, credentials
+from sqlalchemy import select
+
+from src.core.database import get_db_session
+from src.core.models import User
 
 logger = logging.getLogger("milo-orchestrator.auth")
 
@@ -84,6 +88,21 @@ def require_http_user(authorization: Optional[str] = Header(default=None)) -> Au
         return AuthenticatedUser(uid="dev-user", email="dev@example.com", claims={})
     token = _extract_bearer_token(authorization)
     return verify_token(token)
+
+
+async def require_teacher(user: AuthenticatedUser = Depends(require_http_user)) -> AuthenticatedUser:
+    if os.getenv("AUTH_REQUIRED", "true").lower() != "true":
+        return user
+        
+    async with get_db_session() as db:
+        stmt = select(User.role).where(User.id == user.uid)
+        result = await db.execute(stmt)
+        role = result.scalar_one_or_none()
+        
+        if role != "teacher":
+            raise HTTPException(status_code=403, detail="Requires teacher role.")
+            
+    return user
 
 
 def require_ws_user(websocket: WebSocket) -> AuthenticatedUser:

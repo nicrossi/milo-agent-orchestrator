@@ -7,7 +7,7 @@ from src.core.database import get_db_session
 
 from src.api.session import ChatSession
 from src.core.auth import AuthenticatedUser, require_http_user, require_ws_user
-from src.orchestration.agent import OrchestratorAgent
+from src.orchestration.agent import OrchestratorAgent, get_agent
 from src.schemas.chat import ChatRequest, ChatResponse
 
 logger = logging.getLogger("milo-orchestrator.api")
@@ -17,26 +17,13 @@ _agent: Optional[OrchestratorAgent] = None
 _AGENT_OFFLINE_MSG = "The chat orchestration service is currently unavailable."
 
 
-def _get_agent() -> Optional[OrchestratorAgent]:
-    global _agent
-    if _agent is not None:
-        return _agent
-    try:
-        from src.main import rag_service
-
-        _agent = OrchestratorAgent(rag_service=rag_service)
-        return _agent
-    except Exception as err:
-        logger.error("CRITICAL: OrchestratorAgent failed to initialise: %s", err, exc_info=True)
-        return None
-
-
 @router.post("", response_model=ChatResponse)
 async def process_stateless_chat(
-    payload: ChatRequest, user: AuthenticatedUser = Depends(require_http_user)
+    payload: ChatRequest,
+    user: AuthenticatedUser = Depends(require_http_user),
+    agent: OrchestratorAgent = Depends(get_agent),
 ):
     """Processes a single chat query with Firebase-authenticated user context."""
-    agent = _get_agent()
     if agent is None:
         raise HTTPException(status_code=503, detail=_AGENT_OFFLINE_MSG)
 
@@ -52,10 +39,14 @@ async def process_stateless_chat(
 
 
 @router.post("/bootstrap-user")
-async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require_http_user)):
+async def bootstrap_authenticated_user(
+    user: AuthenticatedUser = Depends(require_http_user),
+    role: Optional[str] = None,
+):
     """
     Ensure the authenticated Firebase user exists in relational users table.
     Safe to call repeatedly (idempotent upsert).
+    Accepts an optional `role` query param ("teacher" or "student", default "student").
     """
     display_name = str(
         user.claims.get("name")
@@ -63,6 +54,7 @@ async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require
         or (user.email.split("@")[0] if user.email else "")
     ).strip()
     email = str(user.email or "").strip() or f"{user.uid}@milo.local"
+    user_role = role if role in ("teacher", "student") else "student"
 
     try:
         async with get_db_session() as db:
@@ -70,16 +62,17 @@ async def bootstrap_authenticated_user(user: AuthenticatedUser = Depends(require
             await db.execute(
                 text(
                     """
-                    INSERT INTO users (id, email, display_name)
-                    VALUES (:id, :email, :display_name)
+                    INSERT INTO users (id, email, display_name, role)
+                    VALUES (:id, :email, :display_name, :role)
                     ON CONFLICT (id) DO UPDATE
                     SET email = EXCLUDED.email,
-                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name)
+                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name),
+                        role = EXCLUDED.role
                     """
                 ),
-                {"id": user.uid, "email": email, "display_name": display_name},
+                {"id": user.uid, "email": email, "display_name": display_name, "role": user_role},
             )
-        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name}
+        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name, "role": user_role}
     except Exception:
         logger.error("Failed to bootstrap authenticated user into users table.", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to bootstrap user.")
@@ -90,9 +83,9 @@ async def get_session_history(
     session_id: str,
     limit: int = 200,
     user: AuthenticatedUser = Depends(require_http_user),
+    agent: OrchestratorAgent = Depends(get_agent),
 ):
     """Return persisted session history for the authenticated user."""
-    agent = _get_agent()
     if agent is None:
         raise HTTPException(status_code=503, detail=_AGENT_OFFLINE_MSG)
 
@@ -107,7 +100,7 @@ async def get_session_history(
         messages = [
             {
                 "id": str(row.id),
-                "session_id": str(row.session_id) if getattr(row, 'session_id', None) is not None else None,
+                "session_id": str(row.session_id) if row.session_id is not None else None,
                 "role": row.role,
                 "content": row.content,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
@@ -125,7 +118,12 @@ async def get_session_history(
 
 
 @router.websocket("/activities/{activity_id}")
-async def process_stateful_websocket_chat(websocket: WebSocket, activity_id: str, background_tasks: BackgroundTasks):
+async def process_stateful_websocket_chat(
+        websocket: WebSocket,
+        activity_id: str,
+        background_tasks: BackgroundTasks,
+        agent: OrchestratorAgent = Depends(get_agent),
+):
     """Delegates the full WebSocket lifecycle to a ChatSession with user isolation."""
     try:
         user = require_ws_user(websocket)
@@ -135,7 +133,6 @@ async def process_stateful_websocket_chat(websocket: WebSocket, activity_id: str
         await websocket.close(code=1008, reason="Unauthorized")
         return
 
-    agent = _get_agent()
     if agent is None:
         await websocket.accept()
         try:

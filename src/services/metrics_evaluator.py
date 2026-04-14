@@ -11,24 +11,21 @@ import os
 import uuid
 from pathlib import Path
 
-import google.genai as genai
-from google.genai import types
-from sqlalchemy import select
-
 from src.core.database import get_db_session
 from src.core.models import (
-    ChatMessage,
     ChatSession,
     ReflectionActivity,
     SessionMetric,
     SessionStatus,
 )
+from src.orchestration.agent import OrchestratorAgent
 
 logger = logging.getLogger("milo-orchestrator.metrics_evaluator")
 
 _PROMPT_GUIDE_PATH = Path(__file__).parent.parent / "metrics" / "metrics_prompt_guide.md"
 _OUTPUT_SCHEMA_PATH = Path(__file__).parent.parent / "metrics" / "metrics_output_schema.json"
 _EXAMPLES_PATH = Path(__file__).parent.parent / "metrics" / "metrics_examples.md"
+_REFLECTIVE_FRAMEWORK_GUIDE_PATH = Path(__file__).parent.parent / "metrics" / "reflective_framework_guide.md"
 
 
 def _build_evaluation_prompt(
@@ -39,57 +36,42 @@ def _build_evaluation_prompt(
     prompt_guide = _PROMPT_GUIDE_PATH.read_text()
     output_schema = _OUTPUT_SCHEMA_PATH.read_text()
     examples = _EXAMPLES_PATH.read_text()
+    reflective_framework_guide = _REFLECTIVE_FRAMEWORK_GUIDE_PATH.read_text()
 
     return f"""
+    
+[System Role]
+
+You are an objective Expert Educational Analyst specializing in student metacognition. 
+Your task is to analyze chat transcripts between an AI educational agent and a student, 
+extracting standardized metrics regarding the student's reflective process.    
+    
+
+[Context & Definitions]
+You must evaluate the student's dialogue based strictly on the following pedagogical frameworks. 
+Do not rely on subjective feelings; look for concrete linguistic evidence.
+{reflective_framework_guide}
 {prompt_guide}
 
----
-
-## Annotated reference examples
-
-Study these examples carefully before evaluating the new interaction.
-They show the correct classification for a range of student responses.
-
-{examples}
-
----
-
-## Activity context (provided by the teacher, not shown to the student)
-
-**Teacher goal:** {teacher_goal}
-
-**Activity description:** {context_description}
-
----
-
-## Student interaction transcript
-
-{transcript}
-
----
-
-## Your task
-
-Evaluate the transcript above according to the metric-specific guidance.
-Return ONLY a valid JSON object that strictly follows this schema:
-
-{output_schema}
-
-Rules:
+[Rules & Constraints]
+- Rely STRICTLY on the provided transcript. Do not infer feelings or thoughts the student did not explicitly state.
+- If the transcript is too short or lacks substantive interaction (e.g., just greetings), output `null` for all the metric fields.
+- Output your response ONLY as valid, raw JSON. Do not wrap the JSON in markdown code blocks. Do not include any conversational filter.
+- "evidence" must be a list of 1–3 direct quotes from the student's messages
 - "level" must be one of: "red", "yellow", "green"
 - "justification" must be a single concise paragraph
-- "evidence" must be a list of 1–3 direct quotes from the student's messages
-- "recommended_action" must be a single actionable sentence for the teacher
-- Do not include any text outside the JSON object
+- do not reward verbosity by itself
+- short answers can still be good if they are precise and meaningful
+
+[Input]
+Student's goal (provided by the teacher, not shown to the student): {teacher_goal}
+Activity description: {context_description}
+Transcript: {transcript}
+
+[Expected Output Format]
+{output_schema}
+
 """.strip()
-
-
-def _format_transcript(messages: list[ChatMessage]) -> str:
-    lines = []
-    for msg in messages:
-        speaker = "Student" if msg.role == "user" else "Milo"
-        lines.append(f"{speaker}: {msg.content}")
-    return "\n\n".join(lines)
 
 
 def _parse_llm_response(raw: str) -> dict:
@@ -103,7 +85,7 @@ def _parse_llm_response(raw: str) -> dict:
     return json.loads(raw.strip())
 
 
-async def evaluate_session(session_id: uuid.UUID) -> None:
+async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') -> None:
     """
     Run the metrics evaluation for a completed session.
     Updates session status to EVALUATED or EVALUATION_FAILED.
@@ -121,19 +103,8 @@ async def evaluate_session(session_id: uuid.UUID) -> None:
             if not activity:
                 raise ValueError(f"Activity {session.activity_id} not found")
 
-            # Load messages ordered chronologically
-            stmt = (
-                select(ChatMessage)
-                .where(ChatMessage.session_id == session_id)
-                .order_by(ChatMessage.created_at)
-            )
-            result = await db.execute(stmt)
-            messages = result.scalars().all()
-
-            if not messages:
-                raise ValueError(f"No messages found for session {session_id}")
-
-            transcript = _format_transcript(messages)
+            transcript = session.transcript.strip() if session.transcript else ""
+            
             prompt = _build_evaluation_prompt(
                 transcript=transcript,
                 teacher_goal=activity.teacher_goal,
@@ -141,21 +112,38 @@ async def evaluate_session(session_id: uuid.UUID) -> None:
             )
 
         # Call LLM outside the DB session to avoid holding the connection
-        raw_response = _call_llm(prompt)
+        raw_response = agent.generate_evaluation(prompt)
         parsed = _parse_llm_response(raw_response)
 
         # Write metrics and update session status
         async with get_db_session() as db:
-            rq = parsed["metrics"]["reflection_quality"]
-            cal = parsed["metrics"]["calibration"]
-            ct = parsed["metrics"]["contextual_transfer"]
+            metrics = parsed.get("metrics", parsed)
+            rq = metrics.get("reflection_quality", {
+                "level": "yellow",
+                "justification": "Not evaluated",
+                "evidence": [],
+                "recommended_action": "None"
+            })
+            
+            cal = {
+                "level": "green",
+                "justification": "Mocked for now",
+                "evidence": ["Mocked"],
+                "recommended_action": "Mocked"
+            }
+            ct = {
+                "level": "green",
+                "justification": "Mocked for now",
+                "evidence": ["Mocked"],
+                "recommended_action": "Mocked"
+            }
 
             metric = SessionMetric(
                 session_id=session_id,
                 reflection_quality_level=rq["level"],
                 reflection_quality_justification=rq["justification"],
                 reflection_quality_evidence=rq["evidence"],
-                reflection_quality_action=rq["recommended_action"],
+                # reflection_quality_action=rq["recommended_action"],
                 calibration_level=cal["level"],
                 calibration_justification=cal["justification"],
                 calibration_evidence=cal["evidence"],
@@ -183,22 +171,3 @@ async def evaluate_session(session_id: uuid.UUID) -> None:
             logger.error("Could not mark session %s as EVALUATION_FAILED", session_id, exc_info=True)
         raise
 
-
-def _call_llm(prompt: str) -> str:
-    """Synchronous LLM call for structured evaluation (no streaming needed)."""
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("GOOGLE_API_KEY is required")
-
-    client = genai.Client(api_key=api_key)
-    model_name = os.getenv("LLM_MODEL", "gemini-2.5-flash")
-
-    response = client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            max_output_tokens=4096,
-        ),
-    )
-    return response.text

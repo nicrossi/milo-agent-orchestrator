@@ -7,6 +7,7 @@ import google.genai as genai
 from google.genai import types
 
 from src.adapters.llm.base import BaseLLMAdapter
+from src.schemas.chat import MessageDTO
 
 logger = logging.getLogger("milo-orchestrator.llm")
 
@@ -33,11 +34,17 @@ internal reasoning capabilities.
 
 class GeminiAdapter(BaseLLMAdapter):
     def __init__(self) -> None:
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable is required")
+        vertex_project = os.getenv("VERTEX_PROJECT")
+        vertex_location = os.getenv("VERTEX_LOCATION", "us-central1")
 
-        self.client = genai.Client(api_key=api_key)
+        if vertex_project:
+            self.client = genai.Client(vertexai=True, project=vertex_project, location=vertex_location)
+        else:
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("Either VERTEX_PROJECT or GOOGLE_API_KEY environment variable is required")
+            self.client = genai.Client(api_key=api_key)
+
         self.model_name = os.getenv("LLM_MODEL", "gemini-2.5-flash")
         self._config = types.GenerateContentConfig(
             temperature=0.2,
@@ -47,7 +54,7 @@ class GeminiAdapter(BaseLLMAdapter):
 
     @staticmethod
     def _to_gemini_history(
-            history: Optional[List[Dict[str, str]]],
+            history: Optional[List[MessageDTO]],
     ) -> List[types.Content]:
         """
         Convert our generic history format into Gemini Content objects.
@@ -57,8 +64,8 @@ class GeminiAdapter(BaseLLMAdapter):
 
         return [
             types.Content(
-                role=msg["role"] if msg.get("role") in ("user", "model") else "model",
-                parts=[types.Part(text=msg["content"])]
+                role=msg.role if msg.role in ("user", "model") else "model",
+                parts=[types.Part(text=msg.content)]
             )
             for msg in history
         ]
@@ -72,10 +79,10 @@ class GeminiAdapter(BaseLLMAdapter):
         return f"[Context]\n{context_text}\n\n---\n[User Question]\n{query}"
 
     def generate_answer(
-            self,
-            query: str,
-            context: List[str],
-            history: Optional[List[Dict[str, str]]] = None,
+        self,
+        query: str,
+        context: List[str],
+        history: Optional[List[MessageDTO]] = None,
     ) -> str:
         gemini_history = self._to_gemini_history(history)
         user_message = self._build_user_message(query, context)
@@ -96,13 +103,32 @@ class GeminiAdapter(BaseLLMAdapter):
             )
             raise RuntimeError("Failed to generate response from the LLM") from e
 
+    def generate_evaluation(self, prompt: str) -> str:
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=4096,
+                ),
+            )
+            return response.text
+        except Exception as e:
+            logger.error(
+                "LLM evaluation failed (model=%s)",
+                self.model_name,
+                exc_info=True,
+            )
+            raise RuntimeError("Failed to generate evaluation from the LLM") from e
+
     # Async streaming generation
 
     async def generate_answer_stream(
-            self,
-            query: str,
-            context: List[str],
-            history: Optional[List[Dict[str, str]]] = None,
+        self,
+        query: str,
+        context: List[str],
+        history: Optional[List[MessageDTO]] = None,
     ) -> AsyncIterator[str]:
         gemini_history = self._to_gemini_history(history)
         user_message = self._build_user_message(query, context)

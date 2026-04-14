@@ -20,6 +20,14 @@ class MetricLevel(str, Enum):
     YELLOW = "yellow"
     GREEN = "green"
 
+class ResultsSortBy(str, Enum):
+    STARTED_AT = "started_at"
+    # Future: STUDENT_NAME = "student_name"
+
+class SortOrder(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
+
 # ------------------------------------------------------------------
 # REQUEST PAYLOADS (What the frontend sends to the backend)
 # ------------------------------------------------------------------
@@ -54,9 +62,9 @@ class ActivityTeacherResponse(ActivityStudentResponse):
 
 class MetricResult(BaseModel):
     level: MetricLevel
-    justification: str
-    evidence: List[str]
-    recommended_action: str
+    justification: Optional[str] = None
+    evidence: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
 
 
 class StudentSessionResult(BaseModel):
@@ -78,10 +86,17 @@ class StudentSessionResult(BaseModel):
     class Config:
         from_attributes = True
 
+class PaginatedStudentResults(BaseModel):
+    """Paginated envelope for student session results."""
+    items: List[StudentSessionResult]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
 class ActivityDashboardResponse(BaseModel):
     """
     The master payload sent to the Teacher Dashboard when they click on a specific activity.
     """
     activity: ActivityTeacherResponse
-    results: List[StudentSessionResult]
-
+    results: PaginatedStudentResults
