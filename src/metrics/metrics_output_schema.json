@@ -3,19 +3,19 @@
   "topic": "string",
   "metrics": {
     "reflection_quality": {
-      "level": "red | yellow | green",
+      "level": "descriptive | basic | deep | exceptional",
       "justification": "string",
       "evidence": ["string"],
       "recommended_action": "string"
     },
     "calibration": {
-      "level": "red | yellow | green",
+      "level": "misaligned | partial | aligned",
       "justification": "string",
       "evidence": ["string"],
       "recommended_action": "string"
     },
     "contextual_transfer": {
-      "level": "red | yellow | green",
+      "level": "lacking | vague | meaningful",
       "justification": "string",
       "evidence": ["string"],
       "recommended_action": "string"

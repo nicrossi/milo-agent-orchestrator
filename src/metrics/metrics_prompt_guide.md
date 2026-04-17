@@ -36,14 +36,16 @@ For each interaction, the model must:
 This metric is a direct, digitized translation of the Hatton & Smith (1995) framework for assessing reflective practice.
 Determine the HIGHEST level of reflection the student successfully achieved and sustained.
 
-#### Classify as Red when
+#### Classify as `descriptive` when
 - Descriptive Writing: Mere reporting of events. No reasons given.
 
-#### Classify as Yellow when
+#### Classify as `basic` when
 - Descriptive Reflection: Provides basic causality and "reason-giving".
 
-#### Classify as Green when
+#### Classify as `deep` when
 - Dialogic Reflection: Explores alternatives, self-questions, and weighs competing claims.
+
+#### Classify as `exceptional` when
 - Critical Reflection: Exceptional metacognition. Evaluates underlying personal assumptions.
 
 #### Important considerations

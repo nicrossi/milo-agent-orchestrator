@@ -4,21 +4,13 @@ from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
 
-class ActivityStatus(str, Enum):
-    DRAFT = "DRAFT"
-    PUBLISHED = "PUBLISHED"
-    ARCHIVED = "ARCHIVED"
-
-class SessionStatus(str, Enum):
-    IN_PROGRESS = "IN_PROGRESS"
-    PENDING_EVALUATION = "PENDING_EVALUATION"
-    EVALUATED = "EVALUATED"
-    EVALUATION_FAILED = "EVALUATION_FAILED"
-
-class MetricLevel(str, Enum):
-    RED = "red"
-    YELLOW = "yellow"
-    GREEN = "green"
+from src.core.models import (
+    ActivityStatus,
+    SessionStatus,
+    ReflectionLevel,
+    CalibrationLevel,
+    TransferLevel,
+)
 
 class ResultsSortBy(str, Enum):
     STARTED_AT = "started_at"
@@ -60,12 +52,23 @@ class ActivityStudentResponse(BaseModel):
 class ActivityTeacherResponse(ActivityStudentResponse):
     teacher_goal: str
 
-class MetricResult(BaseModel):
-    level: MetricLevel
+class ReflectionMetricResult(BaseModel):
+    level: ReflectionLevel
     justification: Optional[str] = None
     evidence: Optional[List[str]] = None
     recommended_action: Optional[str] = None
 
+class CalibrationMetricResult(BaseModel):
+    level: CalibrationLevel
+    justification: Optional[str] = None
+    evidence: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
+
+class TransferMetricResult(BaseModel):
+    level: TransferLevel
+    justification: Optional[str] = None
+    evidence: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
 
 class StudentSessionResult(BaseModel):
     """
@@ -79,9 +82,9 @@ class StudentSessionResult(BaseModel):
     started_at: datetime
 
     # AI Metrics (None when the session is still IN_PROGRESS or evaluation failed)
-    reflection_quality: Optional[MetricResult] = None
-    calibration: Optional[MetricResult] = None
-    contextual_transfer: Optional[MetricResult] = None
+    reflection_quality: Optional[ReflectionMetricResult] = None
+    calibration: Optional[CalibrationMetricResult] = None
+    contextual_transfer: Optional[TransferMetricResult] = None
 
     class Config:
         from_attributes = True

@@ -7,10 +7,11 @@ from sqlalchemy import select, func, desc, asc
 
 from src.core.database import get_db_session
 from src.core.auth import AuthenticatedUser, require_http_user, require_teacher
-from src.core.models import ReflectionActivity, ChatSession, SessionMetric, User
+from src.core.models import ReflectionActivity, ChatSession, SessionMetric, User, ActivityStatus
 from src.schemas.activities import (
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
-    ActivityDashboardResponse, StudentSessionResult, MetricResult, ActivityStatus,
+    ActivityDashboardResponse, StudentSessionResult,
+    ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
     PaginatedStudentResults, ResultsSortBy, SortOrder,
 )
 
@@ -109,19 +110,19 @@ async def get_activity_results(
                 student_name=display_name,
                 status=chat_session.status,
                 started_at=chat_session.started_at,
-                reflection_quality=MetricResult(
+                reflection_quality=ReflectionMetricResult(
                     level=metric.reflection_quality_level,
                     justification=metric.reflection_quality_justification,
                     evidence=metric.reflection_quality_evidence,
                     recommended_action=metric.reflection_quality_action,
                 ) if metric and metric.reflection_quality_level else None,
-                calibration=MetricResult(
+                calibration=CalibrationMetricResult(
                     level=metric.calibration_level,
                     justification=metric.calibration_justification,
                     evidence=metric.calibration_evidence,
                     recommended_action=metric.calibration_action,
                 ) if metric and metric.calibration_level else None,
-                contextual_transfer=MetricResult(
+                contextual_transfer=TransferMetricResult(
                     level=metric.contextual_transfer_level,
                     justification=metric.contextual_transfer_justification,
                     evidence=metric.contextual_transfer_evidence,

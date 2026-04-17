@@ -58,7 +58,7 @@ Do not rely on subjective feelings; look for concrete linguistic evidence.
 - If the transcript is too short or lacks substantive interaction (e.g., just greetings), output `null` for all the metric fields.
 - Output your response ONLY as valid, raw JSON. Do not wrap the JSON in markdown code blocks. Do not include any conversational filter.
 - "evidence" must be a list of 1–3 direct quotes from the student's messages
-- "level" must be one of: "red", "yellow", "green"
+- "level" must be assigned according to the metric's specific rubric.
 - "justification" must be a single concise paragraph
 - do not reward verbosity by itself
 - short answers can still be good if they are precise and meaningful
@@ -119,20 +119,20 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
         async with get_db_session() as db:
             metrics = parsed.get("metrics", parsed)
             rq = metrics.get("reflection_quality", {
-                "level": "yellow",
+                "level": "basic",
                 "justification": "Not evaluated",
                 "evidence": [],
                 "recommended_action": "None"
             })
             
             cal = {
-                "level": "green",
+                "level": "aligned",
                 "justification": "Mocked for now",
                 "evidence": ["Mocked"],
                 "recommended_action": "Mocked"
             }
             ct = {
-                "level": "green",
+                "level": "meaningful",
                 "justification": "Mocked for now",
                 "evidence": ["Mocked"],
                 "recommended_action": "Mocked"
