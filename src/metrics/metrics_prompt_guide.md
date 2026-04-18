@@ -48,6 +48,26 @@ Determine the HIGHEST level of reflection the student successfully achieved and 
 #### Classify as `exceptional` when
 - Critical Reflection: Exceptional metacognition. Evaluates underlying personal assumptions.
 
-#### Important considerations
+### 2. Calibration & Goal Alignment
+Measures how aligned the student's self-perception is with what the student actually demonstrates in the interaction.
 
-- do not infer personality traits
+#### Classify as `aligned` when
+- The student's stated self-perception accurately matches their demonstrated knowledge.
+- If they claim to understand, they successfully explain or apply the concept.
+- If they express confusion, they accurately pinpoint the specific gap or boundary of their knowledge.
+
+#### Classify as `partial` when
+- The student's self-assessment is generally in the right direction but lacks precision.
+- They might overestimate their mastery by missing nuances, or recognize they are struggling without being able to articulate why.
+- Demonstrates some awareness of their learning state, but with noticeable blind spots.
+
+#### Classify as `misaligned` when
+- There is a stark contradiction between the student's claims about their learning and their actual performance.
+- They state they fully understand a concept but demonstrate obvious misconceptions (illusory understanding).
+- They claim to know nothing despite actively demonstrating competence.
+
+#### Important considerations
+1.  **Demand Evidence:** Do not accept self-reporting ("I understand now") as proof of learning. You must extract quotes that prove the cognitive leap.
+2.  **Identify "Illusory Understanding":** Penalize responses where the student claims to understand but demonstrates blatant omissions or misconceptions.
+3.  **Detect Bias Reinforcement:** Note if the student uses the reflection merely to confirm their pre-existing prejudices rather than entering a state of productive perplexity.
+4. Do not infer personality traits

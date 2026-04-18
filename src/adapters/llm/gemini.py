@@ -110,9 +110,11 @@ class GeminiAdapter(BaseLLMAdapter):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.1,
-                    max_output_tokens=4096,
+                    max_output_tokens=8192,
+                    response_mime_type="application/json",
                 ),
             )
+            return response.text
             return response.text
         except Exception as e:
             logger.error(

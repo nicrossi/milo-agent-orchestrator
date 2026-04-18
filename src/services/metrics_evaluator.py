@@ -60,6 +60,7 @@ Do not rely on subjective feelings; look for concrete linguistic evidence.
 - "evidence" must be a list of 1–3 direct quotes from the student's messages
 - "level" must be assigned according to the metric's specific rubric.
 - "justification" must be a single concise paragraph
+- "recommended_action" must contain 1-2 concrete, actionable guidelines or points the teacher can use to guide the student to improve this specific metric.
 - do not reward verbosity by itself
 - short answers can still be good if they are precise and meaningful
 
@@ -117,41 +118,45 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
 
         # Write metrics and update session status
         async with get_db_session() as db:
-            metrics = parsed.get("metrics", parsed)
-            rq = metrics.get("reflection_quality", {
+            metrics = parsed.get("metrics") or parsed
+
+            _rq_default = {
                 "level": "basic",
                 "justification": "Not evaluated",
                 "evidence": [],
                 "recommended_action": "None"
-            })
-            
-            cal = {
+            }
+            _cal_default = {
                 "level": "aligned",
-                "justification": "Mocked for now",
-                "evidence": ["Mocked"],
-                "recommended_action": "Mocked"
+                "justification": "Not evaluated",
+                "evidence": [],
+                "recommended_action": "None"
             }
-            ct = {
+            _ct_default = {
                 "level": "meaningful",
-                "justification": "Mocked for now",
-                "evidence": ["Mocked"],
-                "recommended_action": "Mocked"
+                "justification": "Not evaluated",
+                "evidence": [],
+                "recommended_action": "None"
             }
+
+            rq = metrics.get("reflection_quality") or _rq_default
+            cal = metrics.get("calibration") or _cal_default
+            ct = metrics.get("contextual_transfer") or _ct_default
 
             metric = SessionMetric(
                 session_id=session_id,
-                reflection_quality_level=rq["level"],
-                reflection_quality_justification=rq["justification"],
-                reflection_quality_evidence=rq["evidence"],
-                # reflection_quality_action=rq["recommended_action"],
-                calibration_level=cal["level"],
-                calibration_justification=cal["justification"],
-                calibration_evidence=cal["evidence"],
-                calibration_action=cal["recommended_action"],
-                contextual_transfer_level=ct["level"],
-                contextual_transfer_justification=ct["justification"],
-                contextual_transfer_evidence=ct["evidence"],
-                contextual_transfer_action=ct["recommended_action"],
+                reflection_quality_level=rq.get("level"),
+                reflection_quality_justification=rq.get("justification"),
+                reflection_quality_evidence=rq.get("evidence"),
+                reflection_quality_action=rq.get("recommended_action"),
+                calibration_level=cal.get("level"),
+                calibration_justification=cal.get("justification"),
+                calibration_evidence=cal.get("evidence"),
+                calibration_action=cal.get("recommended_action"),
+                contextual_transfer_level=ct.get("level"),
+                contextual_transfer_justification=ct.get("justification"),
+                contextual_transfer_evidence=ct.get("evidence"),
+                contextual_transfer_action=ct.get("recommended_action"),
             )
             db.add(metric)
 
