@@ -3,12 +3,22 @@ from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select, func, desc, asc
+from sqlalchemy import and_, asc, desc, exists, func, or_, select
 
 from src.core.database import get_db_session
 from src.core.auth import AuthenticatedUser, require_http_user, require_teacher
-from src.core.models import ReflectionActivity, ChatSession, SessionMetric, User, ActivityStatus
+from src.core.models import (
+    ActivityCourseAssignment,
+    ActivityStatus,
+    ChatSession,
+    Course,
+    CourseEnrollment,
+    ReflectionActivity,
+    SessionMetric,
+    User,
+)
 from src.schemas.activities import (
+    ActivityAssignCoursesRequest,
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
     ActivityDashboardResponse, StudentSessionResult,
     ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
@@ -23,6 +33,18 @@ async def create_activity(
     user: AuthenticatedUser = Depends(require_teacher)
 ):
     async with get_db_session() as db:
+        if payload.course_ids:
+            course_rows = await db.execute(
+                select(Course.id).where(Course.id.in_(payload.course_ids))
+            )
+            found_course_ids = {row[0] for row in course_rows.all()}
+            missing = [str(course_id) for course_id in payload.course_ids if course_id not in found_course_ids]
+            if missing:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Some courses were not found: {', '.join(missing)}",
+                )
+
         activity = ReflectionActivity(
             title=payload.title,
             teacher_goal=payload.teacher_goal,
@@ -32,6 +54,17 @@ async def create_activity(
         )
         db.add(activity)
         await db.flush()
+
+        if payload.course_ids:
+            for course_id in payload.course_ids:
+                db.add(
+                    ActivityCourseAssignment(
+                        activity_id=activity.id,
+                        course_id=course_id,
+                        assigned_by_id=user.uid,
+                    )
+                )
+
         return activity
 
 @router.get("", response_model=List[ActivityStudentResponse])
@@ -39,10 +72,88 @@ async def list_published_activities(
     user: AuthenticatedUser = Depends(require_http_user)
 ):
     async with get_db_session() as db:
-        stmt = select(ReflectionActivity).where(ReflectionActivity.status == ActivityStatus.PUBLISHED)
+        assignments_exist = exists(
+            select(ActivityCourseAssignment.activity_id).where(
+                ActivityCourseAssignment.activity_id == ReflectionActivity.id
+            )
+        )
+        student_has_assignment = exists(
+            select(ActivityCourseAssignment.activity_id)
+            .join(
+                CourseEnrollment,
+                CourseEnrollment.course_id == ActivityCourseAssignment.course_id,
+            )
+            .where(
+                and_(
+                    ActivityCourseAssignment.activity_id == ReflectionActivity.id,
+                    CourseEnrollment.student_id == user.uid,
+                )
+            )
+        )
+
+        stmt = (
+            select(ReflectionActivity)
+            .where(ReflectionActivity.status == ActivityStatus.PUBLISHED)
+            .where(
+                or_(
+                    ReflectionActivity.created_by_id == user.uid,
+                    student_has_assignment,
+                    ~assignments_exist,
+                )
+            )
+            .order_by(ReflectionActivity.id.desc())
+        )
         result = await db.execute(stmt)
         activities = result.scalars().all()
         return activities
+
+
+@router.post("/{activity_id}/assign-courses", response_model=ActivityTeacherResponse)
+async def assign_activity_to_courses(
+    activity_id: UUID,
+    payload: ActivityAssignCoursesRequest,
+    user: AuthenticatedUser = Depends(require_http_user),
+):
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity:
+            raise HTTPException(status_code=404, detail="Activity not found")
+
+        course_rows = await db.execute(
+            select(Course.id).where(Course.id.in_(payload.course_ids))
+        )
+        found_course_ids = {row[0] for row in course_rows.all()}
+        missing = [str(course_id) for course_id in payload.course_ids if course_id not in found_course_ids]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Some courses were not found: {', '.join(missing)}",
+            )
+
+        existing_rows = await db.execute(
+            select(ActivityCourseAssignment.course_id).where(
+                and_(
+                    ActivityCourseAssignment.activity_id == activity_id,
+                    ActivityCourseAssignment.course_id.in_(payload.course_ids),
+                )
+            )
+        )
+        existing_ids = {row[0] for row in existing_rows.all()}
+
+        for course_id in payload.course_ids:
+            if course_id in existing_ids:
+                continue
+            db.add(
+                ActivityCourseAssignment(
+                    activity_id=activity_id,
+                    course_id=course_id,
+                    assigned_by_id=user.uid,
+                )
+            )
+
+        await db.flush()
+        return activity
+
 
 @router.get("/{activity_id}/results", response_model=ActivityDashboardResponse)
 async def get_activity_results(

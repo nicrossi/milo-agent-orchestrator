@@ -74,6 +74,47 @@ class ActivityStatus(str, PyEnum):
     ARCHIVED = "ARCHIVED"
 
 
+class Course(Base):
+    __tablename__ = "courses"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=True)
+    created_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class CourseEnrollment(Base):
+    __tablename__ = "course_enrollments"
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), primary_key=True
+    )
+    student_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    added_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ActivityCourseAssignment(Base):
+    __tablename__ = "activity_course_assignments"
+    activity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reflection_activities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), primary_key=True
+    )
+    assigned_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class ReflectionActivity(Base):
     __tablename__ = "reflection_activities"
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
