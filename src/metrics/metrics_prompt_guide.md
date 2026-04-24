@@ -27,6 +27,7 @@ For each interaction, the model must:
 1. classify each metric according to their specific rubric
 2. justify the classification briefly
 3. extract evidence snippets from the student's own words
+4. metrics justification and evidence snippets should be stored in the same language as the conversation
 
 ---
 

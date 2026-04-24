@@ -7,9 +7,10 @@ with the metrics rubric, and writes the structured result to session_metrics.
 
 import json
 import logging
-import os
 import uuid
 from pathlib import Path
+
+from sqlalchemy import select
 
 from src.core.database import get_db_session
 from src.core.models import (
@@ -63,6 +64,7 @@ Do not rely on subjective feelings; look for concrete linguistic evidence.
 - "recommended_action" must contain 1-2 concrete, actionable guidelines or points the teacher can use to guide the student to improve this specific metric.
 - do not reward verbosity by itself
 - short answers can still be good if they are precise and meaningful
+- Language conversation should match user's input
 
 [Input]
 Student's goal (provided by the teacher, not shown to the student): {teacher_goal}
@@ -104,8 +106,25 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             if not activity:
                 raise ValueError(f"Activity {session.activity_id} not found")
 
-            transcript = session.transcript.strip() if session.transcript else ""
+            stmt = (
+                select(ChatSession.transcript)
+                .where(
+                    ChatSession.activity_id == session.activity_id,
+                    ChatSession.student_id == session.student_id,
+                    ChatSession.transcript != ""
+                )
+                .order_by(ChatSession.started_at.asc())
+            )
+            result = await db.execute(stmt)
+            transcripts = result.scalars().all()
             
+            transcript = "\n\n".join(transcripts).strip()
+            
+            if not transcript:
+                logger.info("Empty cumulative transcript for session %s. Skipping LLM evaluation.", session_id)
+                session.status = SessionStatus.EVALUATED
+                return
+
             prompt = _build_evaluation_prompt(
                 transcript=transcript,
                 teacher_goal=activity.teacher_goal,
