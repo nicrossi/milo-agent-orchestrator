@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Milo Admin Dashboard</title>
+<style>
+  :root { --bg:#0f1419; --panel:#1b2330; --border:#2c3a4d; --muted:#8a9bb0; --fg:#e6edf3; --accent:#4ea1ff; --good:#3ddc97; --bad:#ff6b6b; }
+  *{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:14px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:14px}
+  header h1{margin:0;font-size:16px;letter-spacing:.5px} header .badge{background:var(--bad);color:#fff;font-size:10px;padding:2px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.5px}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px;max-width:1400px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px}
+  .panel h2{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 8px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top}
+  th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+  td.mono,th.mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#cfd9e3}
+  input,select,button,textarea{font:inherit;background:#0d141d;color:var(--fg);border:1px solid var(--border);padding:6px 8px;border-radius:4px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  button{cursor:pointer;background:var(--accent);color:#0d141d;border-color:var(--accent);font-weight:600}
+  button.ghost{background:transparent;color:var(--fg)}
+  button.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
+  button:hover{filter:brightness(1.1)}
+  form{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;background:#0d141d;border:1px solid var(--border);border-radius:6px;padding:10px}
+  form .row{display:flex;gap:8px;align-items:center}
+  form .row > *{flex:1}
+  .pill{display:inline-block;background:#0d141d;border:1px solid var(--border);border-radius:99px;padding:1px 8px;margin:1px 3px 1px 0;font-size:11px}
+  .pill .x{color:var(--bad);cursor:pointer;margin-left:6px}
+  .toast{position:fixed;bottom:18px;right:18px;background:var(--panel);border:1px solid var(--border);padding:10px 14px;border-radius:6px;display:none;max-width:380px;font-size:13px;z-index:99}
+  .toast.show{display:block} .toast.err{border-color:var(--bad)} .toast.ok{border-color:var(--good)}
+  .empty{color:var(--muted);font-style:italic;padding:8px 0}
+  .copy{cursor:pointer;border:none;background:none;color:var(--accent);padding:0 4px;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Milo Admin Dashboard</h1>
+  <span class="badge">No auth · dev only</span>
+  <span style="margin-left:auto;color:var(--muted);font-size:12px" id="status">connecting…</span>
+</header>
+
+<main>
+  <section class="panel" style="grid-column:1/-1">
+    <h2>Create user</h2>
+    <form id="form-user">
+      <div class="row">
+        <input name="display_name" placeholder="Display name" required />
+        <input name="email" type="email" placeholder="email@milo.test" required />
+        <input name="password" type="text" placeholder="password (optional, auto-generated)" />
+        <button type="submit">Create</button>
+      </div>
+    </form>
+    <h2>Users</h2>
+    <table id="tbl-users">
+      <thead><tr><th>Display name</th><th>Email</th><th class="mono">UID</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Create course</h2>
+    <form id="form-course">
+      <input name="name" placeholder="Course name" required />
+      <textarea name="description" placeholder="Description (optional)" rows="2"></textarea>
+      <select name="teacher_id" required>
+        <option value="">— select teacher —</option>
+      </select>
+      <button type="submit">Create course</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>Add student to course</h2>
+    <form id="form-enroll">
+      <select name="course_id" required>
+        <option value="">— select course —</option>
+      </select>
+      <select name="student_id" required>
+        <option value="">— select student —</option>
+      </select>
+      <button type="submit">Enroll</button>
+    </form>
+  </section>
+
+  <section class="panel" style="grid-column:1/-1">
+    <h2>Courses</h2>
+    <table id="tbl-courses">
+      <thead><tr><th>Name</th><th>Teacher</th><th>Students</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = location.origin;
+const $ = sel => document.querySelector(sel);
+let users = [], courses = [];
+
+function toast(msg, kind='ok'){
+  const t = $('#toast'); t.textContent = msg; t.className='toast show '+kind;
+  clearTimeout(window._tt); window._tt = setTimeout(()=>t.classList.remove('show'), 4500);
+}
+async function api(method, path, body){
+  const r = await fetch(API+path, {method, headers:body?{'Content-Type':'application/json'}:{}, body:body?JSON.stringify(body):undefined});
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.detail||r.statusText);
+  return data;
+}
+function copy(text){ navigator.clipboard.writeText(text).then(()=>toast('Copied: '+text)); }
+
+async function loadUsers(){
+  users = await api('GET','/admin/users');
+  const tbody = $('#tbl-users tbody');
+  tbody.innerHTML = users.length ? '' : '<tr><td colspan="3" class="empty">no users yet</td></tr>';
+  for(const u of users){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${u.display_name}</td><td>${u.email}</td><td class="mono">${u.uid} <button class="copy" onclick="copy('${u.uid}')">copy</button></td>`;
+    tbody.appendChild(tr);
+  }
+  for(const sel of [document.querySelector('select[name=teacher_id]'), document.querySelector('select[name=student_id]')]){
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">— select ${sel.name==='teacher_id'?'teacher':'student'} —</option>` +
+      users.map(u=>`<option value="${u.uid}">${u.display_name} · ${u.email}</option>`).join('');
+    sel.value = cur;
+  }
+}
+
+async function loadCourses(){
+  courses = await api('GET','/admin/courses');
+  const tbody = $('#tbl-courses tbody');
+  tbody.innerHTML = courses.length ? '' : '<tr><td colspan="4" class="empty">no courses yet</td></tr>';
+  for(const c of courses){
+    const studentPills = c.student_ids.map(sid=>{
+      const u = users.find(x=>x.uid===sid);
+      const label = u ? u.display_name : sid;
+      return `<span class="pill">${label}<span class="x" data-cid="${c.id}" data-sid="${sid}">×</span></span>`;
+    }).join('') || '<span class="empty">— none —</span>';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${c.name}</strong>${c.description?'<br><small style="color:var(--muted)">'+c.description+'</small>':''}</td>
+      <td>${c.teacher_name||'?'}<br><small style="color:var(--muted)">${c.teacher_email||''}</small></td>
+      <td>${studentPills}</td>
+      <td><code style="font-size:11px;color:var(--muted)">${c.id.slice(0,8)}</code></td>`;
+    tbody.appendChild(tr);
+  }
+  // course dropdown
+  const sel = document.querySelector('select[name=course_id]');
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">— select course —</option>` +
+    courses.map(c=>`<option value="${c.id}">${c.name}</option>`).join('');
+  sel.value = cur;
+  // unenroll handlers
+  for(const x of document.querySelectorAll('.pill .x')){
+    x.addEventListener('click', async ()=>{
+      try{ await api('DELETE',`/admin/courses/${x.dataset.cid}/students/${x.dataset.sid}`); await loadCourses(); toast('Unenrolled','ok'); }
+      catch(e){ toast(e.message,'err'); }
+    });
+  }
+}
+
+$('#form-user').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  if(!fd.password) delete fd.password;
+  try{
+    const u = await api('POST','/admin/users', fd);
+    e.target.reset();
+    toast(`Created ${u.email} | password: ${u.password} (CLICK TO COPY)`, 'ok');
+    $('#toast').onclick = ()=>copy(`${u.email} / ${u.password}`);
+    await loadUsers(); await loadCourses();
+  }catch(err){ toast(err.message,'err'); }
+});
+
+$('#form-course').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  try{ await api('POST','/admin/courses', fd); e.target.reset(); await loadCourses(); toast('Course created','ok'); }
+  catch(err){ toast(err.message,'err'); }
+});
+
+$('#form-enroll').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fd = Object.fromEntries(new FormData(e.target));
+  try{ await api('POST',`/admin/courses/${fd.course_id}/students`, {student_id: fd.student_id}); await loadCourses(); toast('Student enrolled','ok'); }
+  catch(err){ toast(err.message,'err'); }
+});
+
+(async function init(){
+  try{
+    const h = await api('GET','/healthcheck');
+    $('#status').textContent = 'connected · '+h.status;
+    await loadUsers(); await loadCourses();
+  }catch(e){ $('#status').textContent = 'error: '+e.message; toast(e.message,'err'); }
+})();
+</script>
+</body>
+</html>

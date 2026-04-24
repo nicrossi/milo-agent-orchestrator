@@ -4,6 +4,7 @@ Encapsulates WebSocket connection lifecycle and chat session state.
 
 import asyncio
 import logging
+import os
 from typing import Optional, List
 import uuid
 
@@ -18,6 +19,16 @@ from src.services.metrics_evaluator import evaluate_session
 logger = logging.getLogger("milo-orchestrator.session")
 
 _IDLE_TIMEOUT_SECONDS = 3600.0
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+_AUTO_EVALUATE_ON_CHAT_CLOSE = _env_flag("AUTO_EVALUATE_ON_CHAT_CLOSE", default=True)
 
 
 async def run_llm_evaluator(session_id: uuid.UUID, agent: OrchestratorAgent,) -> None:
@@ -113,6 +124,13 @@ class ChatSession:
                 if session := await db.get(ChatSessionModel, self._session_id_uuid):
                     session.status = SessionStatus.PENDING_EVALUATION
                     await db.commit()
+
+            if not _AUTO_EVALUATE_ON_CHAT_CLOSE:
+                logger.info(
+                    "Session '%s': AUTO_EVALUATE_ON_CHAT_CLOSE=false, skipping evaluation.",
+                    self._session_id,
+                )
+                return
 
             # Non-blocking background task scheduling
             asyncio.create_task(run_llm_evaluator(self._session_id_uuid, self._agent))

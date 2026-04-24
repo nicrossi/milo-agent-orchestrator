@@ -28,12 +28,24 @@ class ActivityCreate(BaseModel):
     teacher_goal: str = Field(..., description="Hidden from students, used by AI")
     context_description: str = Field(..., description="The prompt for the student and AI")
     status: ActivityStatus = Field(default=ActivityStatus.PUBLISHED)
+    course_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description="Optional list of course IDs to assign this activity to immediately.",
+    )
 
 class ActivityUpdate(BaseModel):
     title: Optional[str] = None
     teacher_goal: Optional[str] = None
     context_description: Optional[str] = None
     status: Optional[ActivityStatus] = None
+
+
+class ActivityAssignCoursesRequest(BaseModel):
+    course_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="One or more course IDs that should receive this activity.",
+    )
 
 # ------------------------------------------------------------------
 # RESPONSE PAYLOADS (What the backend sends to the frontend)

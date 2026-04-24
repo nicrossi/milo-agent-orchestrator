@@ -14,6 +14,7 @@ The following environment variables must be set for the application to run:
 | `DB_POOL_SIZE`                | No       | SQLAlchemy pool size (default: `5`)              |
 | `DB_MAX_OVERFLOW`             | No       | SQLAlchemy max overflow (default: `10`)          |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Yes    | Path to the Firebase service account JSON file   |
+| `AUTO_EVALUATE_ON_CHAT_CLOSE` | No       | Set `false` to skip automatic LLM metrics evaluation when a chat session closes (default: `true`) |
 
 ### Example `.env` File
 
@@ -26,6 +27,7 @@ LLM_MODEL="gemini-2.5-flash"
 DB_POOL_SIZE=5
 DB_MAX_OVERFLOW=10
 FIREBASE_SERVICE_ACCOUNT_PATH="/path/to/service-account-key.json"
+AUTO_EVALUATE_ON_CHAT_CLOSE=true
 ```
 
 ## Running the Project
