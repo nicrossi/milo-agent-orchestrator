@@ -129,11 +129,13 @@ def main() -> None:
     # --- Seed users directly in DB (bootstrap-user endpoint returns 500 — see notes) ---
     seed_sql_parts = []
     for u in USERS:
+        role = "teacher" if "teacher" in u["uid"] else "student"
         seed_sql_parts.append(
-            "INSERT INTO users (id, email, display_name) VALUES "
-            f"('{u['uid']}', '{u['email']}', '{u['name']}') "
+            "INSERT INTO users (id, email, display_name, role) VALUES "
+            f"('{u['uid']}', '{u['email']}', '{u['name']}', '{role}') "
             "ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, "
-            "display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name);"
+            "display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name), "
+            "role = EXCLUDED.role;"
         )
     seed_sql = " ".join(seed_sql_parts)
     env = {**os.environ, "PGPASSWORD": "postgres"}
