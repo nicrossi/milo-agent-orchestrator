@@ -20,10 +20,42 @@ from src.core.models import (
 from src.schemas.activities import (
     ActivityAssignCoursesRequest,
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
-    ActivityDashboardResponse, StudentSessionResult,
+    ActivityDashboardResponse, CourseRef, StudentSessionResult,
     ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
     PaginatedStudentResults, ResultsSortBy, SortOrder,
 )
+
+
+async def _load_courses_for_activities(db, activity_ids):
+    """Return {activity_id: [CourseRef]} for the given activities."""
+    if not activity_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ActivityCourseAssignment.activity_id, Course.id, Course.name)
+            .join(Course, Course.id == ActivityCourseAssignment.course_id)
+            .where(ActivityCourseAssignment.activity_id.in_(activity_ids))
+        )
+    ).all()
+    out = {}
+    for activity_id, course_id, course_name in rows:
+        out.setdefault(activity_id, []).append(CourseRef(id=course_id, name=course_name))
+    return out
+
+
+def _attach_courses(activity, courses_map, response_cls):
+    """Build a response model from an ORM activity, attaching its courses."""
+    base = {
+        "id": activity.id,
+        "title": activity.title,
+        "context_description": activity.context_description,
+        "status": activity.status,
+        "created_by_id": activity.created_by_id,
+        "courses": courses_map.get(activity.id, []),
+    }
+    if response_cls is ActivityTeacherResponse:
+        base["teacher_goal"] = activity.teacher_goal
+    return response_cls(**base)
 
 router = APIRouter(prefix="/activities", tags=["Activities"])
 
@@ -64,8 +96,10 @@ async def create_activity(
                         assigned_by_id=user.uid,
                     )
                 )
+            await db.flush()
 
-        return activity
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
 
 @router.get("", response_model=List[ActivityStudentResponse])
 async def list_published_activities(
@@ -105,7 +139,8 @@ async def list_published_activities(
         )
         result = await db.execute(stmt)
         activities = result.scalars().all()
-        return activities
+        courses_map = await _load_courses_for_activities(db, [a.id for a in activities])
+        return [_attach_courses(a, courses_map, ActivityStudentResponse) for a in activities]
 
 
 @router.post("/{activity_id}/assign-courses", response_model=ActivityTeacherResponse)
@@ -152,7 +187,8 @@ async def assign_activity_to_courses(
             )
 
         await db.flush()
-        return activity
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
 
 
 @router.get("/{activity_id}/results", response_model=ActivityDashboardResponse)

@@ -50,13 +50,22 @@ class ActivityAssignCoursesRequest(BaseModel):
 # ------------------------------------------------------------------
 # RESPONSE PAYLOADS (What the backend sends to the frontend)
 # ------------------------------------------------------------------
+class CourseRef(BaseModel):
+    id: UUID
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
 class ActivityStudentResponse(BaseModel):
     id: UUID
     title: str
     context_description: str
     status: ActivityStatus
     created_by_id: str
-    
+    courses: List[CourseRef] = Field(default_factory=list)
+
     class Config:
         from_attributes = True
 
