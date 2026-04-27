@@ -35,7 +35,26 @@ Evaluate the student's emotional momentum based on the CRYSTAL ISLAND research f
 
 ---
 
-## Evaluation Directives
-1.  **Demand Evidence:** Do not accept self-reporting ("I understand now") as proof of learning. You must extract quotes that prove the cognitive leap.
-2.  **Identify "Illusory Understanding":** Penalize responses where the student claims to understand but demonstrates blatant omissions or misconceptions.
-3.  **Detect Bias Reinforcement:** Note if the student uses the reflection merely to confirm their pre-existing prejudices rather than entering a state of productive perplexity.
+## 4. Calibration & Goal Alignment
+Measures how aligned the student's self-perception is with what the student actually demonstrates in the interaction.
+You must evaluate the gap between the student's self-perception of understanding and their actual demonstrated competence. 
+To determine their actual competence, you MUST measure their performance against the hidden `teacher_goal`.
+
+Classify the student's `calibration_level` into exactly ONE of these three categories:
+
+**1. Well-Calibrated (Aligned Perception)**
+* **Definition:** The student's self-assessment perfectly matches their performance regarding the `teacher_goal`.
+* **Markers to look for:**
+    * *Accurate Mastery:* They claim they understand the topic ("I get it now") AND successfully achieve the `teacher_goal` with correct reasoning.
+    * *Accurate Struggle:* They admit they are confused ("I still don't get the second part") AND correctly identify the specific gap in their knowledge relative to the goal.
+
+**2. Overconfident (Misaligned Perception)**
+* **Definition:** The student believes they understand the topic and have completed the task, but they actually failed to meet the `teacher_goal`.
+* **Markers to look for:**
+    * They use confident language ("This is easy," "I know this," "Done") but their reasoning is flawed, superficial, or completely misses the core requirement of the `teacher_goal`.
+    * They exhibit the "Satisfaction Fallacy," claiming the chat was helpful without demonstrating the required cognitive leap.
+
+**3. Underconfident (Partial Perception)**
+* **Definition:** The student expresses high doubt, frustration, or claims they do not understand, despite actually demonstrating the reasoning required to meet the `teacher_goal`.
+* **Markers to look for:**
+    * They use language of defeat ("I'm bad at this," "I'm just guessing," "I don't know") but their actual answers and logical deductions successfully satisfy the `teacher_goal`.

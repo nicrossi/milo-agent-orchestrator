@@ -4,21 +4,13 @@ from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
 
-class ActivityStatus(str, Enum):
-    DRAFT = "DRAFT"
-    PUBLISHED = "PUBLISHED"
-    ARCHIVED = "ARCHIVED"
-
-class SessionStatus(str, Enum):
-    IN_PROGRESS = "IN_PROGRESS"
-    PENDING_EVALUATION = "PENDING_EVALUATION"
-    EVALUATED = "EVALUATED"
-    EVALUATION_FAILED = "EVALUATION_FAILED"
-
-class MetricLevel(str, Enum):
-    RED = "red"
-    YELLOW = "yellow"
-    GREEN = "green"
+from src.core.models import (
+    ActivityStatus,
+    SessionStatus,
+    ReflectionLevel,
+    CalibrationLevel,
+    TransferLevel,
+)
 
 class ResultsSortBy(str, Enum):
     STARTED_AT = "started_at"
@@ -36,6 +28,10 @@ class ActivityCreate(BaseModel):
     teacher_goal: str = Field(..., description="Hidden from students, used by AI")
     context_description: str = Field(..., description="The prompt for the student and AI")
     status: ActivityStatus = Field(default=ActivityStatus.PUBLISHED)
+    course_ids: Optional[List[UUID]] = Field(
+        default=None,
+        description="Optional list of course IDs to assign this activity to immediately.",
+    )
 
 class ActivityUpdate(BaseModel):
     title: Optional[str] = None
@@ -43,16 +39,33 @@ class ActivityUpdate(BaseModel):
     context_description: Optional[str] = None
     status: Optional[ActivityStatus] = None
 
+
+class ActivityAssignCoursesRequest(BaseModel):
+    course_ids: List[UUID] = Field(
+        ...,
+        min_length=1,
+        description="One or more course IDs that should receive this activity.",
+    )
+
 # ------------------------------------------------------------------
 # RESPONSE PAYLOADS (What the backend sends to the frontend)
 # ------------------------------------------------------------------
+class CourseRef(BaseModel):
+    id: UUID
+    name: str
+
+    class Config:
+        from_attributes = True
+
+
 class ActivityStudentResponse(BaseModel):
     id: UUID
     title: str
     context_description: str
     status: ActivityStatus
     created_by_id: str
-    
+    courses: List[CourseRef] = Field(default_factory=list)
+
     class Config:
         from_attributes = True
 
@@ -60,12 +73,23 @@ class ActivityStudentResponse(BaseModel):
 class ActivityTeacherResponse(ActivityStudentResponse):
     teacher_goal: str
 
-class MetricResult(BaseModel):
-    level: MetricLevel
+class ReflectionMetricResult(BaseModel):
+    level: ReflectionLevel
     justification: Optional[str] = None
     evidence: Optional[List[str]] = None
     recommended_action: Optional[str] = None
 
+class CalibrationMetricResult(BaseModel):
+    level: CalibrationLevel
+    justification: Optional[str] = None
+    evidence: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
+
+class TransferMetricResult(BaseModel):
+    level: TransferLevel
+    justification: Optional[str] = None
+    evidence: Optional[List[str]] = None
+    recommended_action: Optional[str] = None
 
 class StudentSessionResult(BaseModel):
     """
@@ -79,9 +103,9 @@ class StudentSessionResult(BaseModel):
     started_at: datetime
 
     # AI Metrics (None when the session is still IN_PROGRESS or evaluation failed)
-    reflection_quality: Optional[MetricResult] = None
-    calibration: Optional[MetricResult] = None
-    contextual_transfer: Optional[MetricResult] = None
+    reflection_quality: Optional[ReflectionMetricResult] = None
+    calibration: Optional[CalibrationMetricResult] = None
+    contextual_transfer: Optional[TransferMetricResult] = None
 
     class Config:
         from_attributes = True

@@ -206,6 +206,13 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Local dev artifacts (test transcripts, ad-hoc payloads, Claude worktrees)
+tmp-*.json
+*_transcript.txt
+.claude/
+# Conversation transcript dumps left in repo root by older orchestrator runs
+[A-Za-z0-9]*_[0-9a-f]*-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*-[0-9a-f]*.txt
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

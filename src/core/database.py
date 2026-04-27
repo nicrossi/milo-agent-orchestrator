@@ -134,15 +134,15 @@ async def init_db() -> None:
                 text("""
                      CREATE TABLE IF NOT EXISTS session_metrics (
                          session_id UUID PRIMARY KEY,
-                         reflection_quality_level VARCHAR(10),
+                         reflection_quality_level VARCHAR(50),
                          reflection_quality_justification TEXT,
                          reflection_quality_evidence JSON,
                          reflection_quality_action TEXT,
-                         calibration_level VARCHAR(10),
+                         calibration_level VARCHAR(50),
                          calibration_justification TEXT,
                          calibration_evidence JSON,
                          calibration_action TEXT,
-                         contextual_transfer_level VARCHAR(10),
+                         contextual_transfer_level VARCHAR(50),
                          contextual_transfer_justification TEXT,
                          contextual_transfer_evidence JSON,
                          contextual_transfer_action TEXT
@@ -159,6 +159,16 @@ async def init_db() -> None:
             )
             await conn.execute(
                 text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT ''")
+            )
+            
+            await conn.execute(
+                text("ALTER TABLE session_metrics ALTER COLUMN reflection_quality_level TYPE VARCHAR(50)")
+            )
+            await conn.execute(
+                text("ALTER TABLE session_metrics ALTER COLUMN calibration_level TYPE VARCHAR(50)")
+            )
+            await conn.execute(
+                text("ALTER TABLE session_metrics ALTER COLUMN contextual_transfer_level TYPE VARCHAR(50)")
             )
 
             # Phase 5: resumable policy state + per-session policy metrics.

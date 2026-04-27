@@ -3,16 +3,59 @@ from typing import List
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select, func, desc, asc
+from sqlalchemy import and_, asc, desc, exists, func, or_, select
 
 from src.core.database import get_db_session
 from src.core.auth import AuthenticatedUser, require_http_user, require_teacher
-from src.core.models import ReflectionActivity, ChatSession, SessionMetric, User
+from src.core.models import (
+    ActivityCourseAssignment,
+    ActivityStatus,
+    ChatSession,
+    Course,
+    CourseEnrollment,
+    ReflectionActivity,
+    SessionMetric,
+    User,
+)
 from src.schemas.activities import (
+    ActivityAssignCoursesRequest,
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
-    ActivityDashboardResponse, StudentSessionResult, MetricResult, ActivityStatus,
+    ActivityDashboardResponse, CourseRef, StudentSessionResult,
+    ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
     PaginatedStudentResults, ResultsSortBy, SortOrder,
 )
+
+
+async def _load_courses_for_activities(db, activity_ids):
+    """Return {activity_id: [CourseRef]} for the given activities."""
+    if not activity_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ActivityCourseAssignment.activity_id, Course.id, Course.name)
+            .join(Course, Course.id == ActivityCourseAssignment.course_id)
+            .where(ActivityCourseAssignment.activity_id.in_(activity_ids))
+        )
+    ).all()
+    out = {}
+    for activity_id, course_id, course_name in rows:
+        out.setdefault(activity_id, []).append(CourseRef(id=course_id, name=course_name))
+    return out
+
+
+def _attach_courses(activity, courses_map, response_cls):
+    """Build a response model from an ORM activity, attaching its courses."""
+    base = {
+        "id": activity.id,
+        "title": activity.title,
+        "context_description": activity.context_description,
+        "status": activity.status,
+        "created_by_id": activity.created_by_id,
+        "courses": courses_map.get(activity.id, []),
+    }
+    if response_cls is ActivityTeacherResponse:
+        base["teacher_goal"] = activity.teacher_goal
+    return response_cls(**base)
 
 router = APIRouter(prefix="/activities", tags=["Activities"])
 
@@ -22,6 +65,18 @@ async def create_activity(
     user: AuthenticatedUser = Depends(require_teacher)
 ):
     async with get_db_session() as db:
+        if payload.course_ids:
+            course_rows = await db.execute(
+                select(Course.id).where(Course.id.in_(payload.course_ids))
+            )
+            found_course_ids = {row[0] for row in course_rows.all()}
+            missing = [str(course_id) for course_id in payload.course_ids if course_id not in found_course_ids]
+            if missing:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Some courses were not found: {', '.join(missing)}",
+                )
+
         activity = ReflectionActivity(
             title=payload.title,
             teacher_goal=payload.teacher_goal,
@@ -31,17 +86,110 @@ async def create_activity(
         )
         db.add(activity)
         await db.flush()
-        return activity
+
+        if payload.course_ids:
+            for course_id in payload.course_ids:
+                db.add(
+                    ActivityCourseAssignment(
+                        activity_id=activity.id,
+                        course_id=course_id,
+                        assigned_by_id=user.uid,
+                    )
+                )
+            await db.flush()
+
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
 
 @router.get("", response_model=List[ActivityStudentResponse])
 async def list_published_activities(
     user: AuthenticatedUser = Depends(require_http_user)
 ):
     async with get_db_session() as db:
-        stmt = select(ReflectionActivity).where(ReflectionActivity.status == ActivityStatus.PUBLISHED)
+        assignments_exist = exists(
+            select(ActivityCourseAssignment.activity_id).where(
+                ActivityCourseAssignment.activity_id == ReflectionActivity.id
+            )
+        )
+        student_has_assignment = exists(
+            select(ActivityCourseAssignment.activity_id)
+            .join(
+                CourseEnrollment,
+                CourseEnrollment.course_id == ActivityCourseAssignment.course_id,
+            )
+            .where(
+                and_(
+                    ActivityCourseAssignment.activity_id == ReflectionActivity.id,
+                    CourseEnrollment.student_id == user.uid,
+                )
+            )
+        )
+
+        stmt = (
+            select(ReflectionActivity)
+            .where(ReflectionActivity.status == ActivityStatus.PUBLISHED)
+            .where(
+                or_(
+                    ReflectionActivity.created_by_id == user.uid,
+                    student_has_assignment,
+                    ~assignments_exist,
+                )
+            )
+            .order_by(ReflectionActivity.id.desc())
+        )
         result = await db.execute(stmt)
         activities = result.scalars().all()
-        return activities
+        courses_map = await _load_courses_for_activities(db, [a.id for a in activities])
+        return [_attach_courses(a, courses_map, ActivityStudentResponse) for a in activities]
+
+
+@router.post("/{activity_id}/assign-courses", response_model=ActivityTeacherResponse)
+async def assign_activity_to_courses(
+    activity_id: UUID,
+    payload: ActivityAssignCoursesRequest,
+    user: AuthenticatedUser = Depends(require_http_user),
+):
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity:
+            raise HTTPException(status_code=404, detail="Activity not found")
+
+        course_rows = await db.execute(
+            select(Course.id).where(Course.id.in_(payload.course_ids))
+        )
+        found_course_ids = {row[0] for row in course_rows.all()}
+        missing = [str(course_id) for course_id in payload.course_ids if course_id not in found_course_ids]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Some courses were not found: {', '.join(missing)}",
+            )
+
+        existing_rows = await db.execute(
+            select(ActivityCourseAssignment.course_id).where(
+                and_(
+                    ActivityCourseAssignment.activity_id == activity_id,
+                    ActivityCourseAssignment.course_id.in_(payload.course_ids),
+                )
+            )
+        )
+        existing_ids = {row[0] for row in existing_rows.all()}
+
+        for course_id in payload.course_ids:
+            if course_id in existing_ids:
+                continue
+            db.add(
+                ActivityCourseAssignment(
+                    activity_id=activity_id,
+                    course_id=course_id,
+                    assigned_by_id=user.uid,
+                )
+            )
+
+        await db.flush()
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
+
 
 @router.get("/{activity_id}/results", response_model=ActivityDashboardResponse)
 async def get_activity_results(
@@ -109,19 +257,19 @@ async def get_activity_results(
                 student_name=display_name,
                 status=chat_session.status,
                 started_at=chat_session.started_at,
-                reflection_quality=MetricResult(
+                reflection_quality=ReflectionMetricResult(
                     level=metric.reflection_quality_level,
                     justification=metric.reflection_quality_justification,
                     evidence=metric.reflection_quality_evidence,
                     recommended_action=metric.reflection_quality_action,
                 ) if metric and metric.reflection_quality_level else None,
-                calibration=MetricResult(
+                calibration=CalibrationMetricResult(
                     level=metric.calibration_level,
                     justification=metric.calibration_justification,
                     evidence=metric.calibration_evidence,
                     recommended_action=metric.calibration_action,
                 ) if metric and metric.calibration_level else None,
-                contextual_transfer=MetricResult(
+                contextual_transfer=TransferMetricResult(
                     level=metric.contextual_transfer_level,
                     justification=metric.contextual_transfer_justification,
                     evidence=metric.contextual_transfer_evidence,
