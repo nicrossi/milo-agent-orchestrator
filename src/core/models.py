@@ -105,6 +105,8 @@ class ChatSession(Base):
     status: Mapped[SessionStatus] = mapped_column(String(50), default=SessionStatus.IN_PROGRESS)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     transcript: Mapped[str] = mapped_column(Text, server_default="", default="")
+    # Phase 5: serialized PolicyStateSnapshot for resumable sessions.
+    policy_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class SessionMetric(Base):
@@ -128,3 +130,6 @@ class SessionMetric(Base):
     contextual_transfer_justification: Mapped[str] = mapped_column(Text, nullable=True)
     contextual_transfer_evidence: Mapped[list] = mapped_column(JSON, nullable=True)
     contextual_transfer_action: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Phase 5: per-session policy-engine telemetry (MetricsCollector.snapshot()).
+    policy_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)

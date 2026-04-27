@@ -42,3 +42,46 @@ def test_direct_prefix_with_question_mark_still_triggers():
     modified, text = i.process("La respuesta es 42. ¿Entendiste?", "¿Qué aprendiste?")
     assert modified
     assert "¿Qué aprendiste?" in text
+
+
+# --- Phase 2: adversarial cases not caught by the bare-"?" check ---
+
+def test_only_rhetorical_question_triggers():
+    # A response with ONLY a closed/rhetorical "?" — the old check let this
+    # pass; the strengthened detector catches it.
+    i = DirectAnswerDetectorInterceptor()
+    modified, text = i.process(
+        "Los herbívoros mueren de hambre eventualmente. ¿Entendiste?",
+        "¿Qué te hace pensar eso?",
+    )
+    assert modified
+    assert "¿Qué te hace pensar eso?" in text
+
+
+def test_yes_no_only_question_triggers():
+    # "¿Probaste con X?" is interrogative but not generative — should fire.
+    i = DirectAnswerDetectorInterceptor()
+    modified, _ = i.process(
+        "Esa idea funciona bien para este caso. ¿Probaste con esa estrategia?",
+        "¿Qué alternativas considerarías?",
+    )
+    # Mid-score (~0.3) is below threshold, so this fires.
+    assert modified
+
+
+def test_open_wh_question_passes():
+    i = DirectAnswerDetectorInterceptor()
+    ok, _ = i.process(
+        "Hay varias formas de pensarlo. ¿Por qué creés que pasa eso?",
+        "fallback",
+    )
+    assert not ok
+
+
+def test_empty_output_replaced_with_question():
+    # If the LLM produces nothing, send the planned question so the user has
+    # something to engage with rather than silence.
+    i = DirectAnswerDetectorInterceptor()
+    modified, text = i.process("", "¿Qué pensás?")
+    assert modified
+    assert text == "¿Qué pensás?"

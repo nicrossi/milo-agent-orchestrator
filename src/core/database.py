@@ -161,6 +161,20 @@ async def init_db() -> None:
                 text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS transcript TEXT NOT NULL DEFAULT ''")
             )
 
+            # Phase 5: resumable policy state + per-session policy metrics.
+            await conn.execute(
+                text("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS policy_state JSONB")
+            )
+            await conn.execute(text("SAVEPOINT sp_alter_session_metrics"))
+            try:
+                await conn.execute(
+                    text("ALTER TABLE session_metrics ADD COLUMN IF NOT EXISTS policy_metrics JSONB")
+                )
+            except Exception:
+                # session_metrics may not exist yet on first boot; create_all
+                # below will create it with the column included.
+                await conn.execute(text("ROLLBACK TO SAVEPOINT sp_alter_session_metrics"))
+
             await conn.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_chat_messages_user_session_created "

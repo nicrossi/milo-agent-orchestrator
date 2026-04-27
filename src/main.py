@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.api.routers import chat, activities
+from src.api.routers import chat, activities, policy
 from src.core.database import init_db, close_db
 from src.services.rag import IntegratedRAGService
 
@@ -56,6 +56,7 @@ app.add_middleware(
 
 app.include_router(chat.router)
 app.include_router(activities.router)
+app.include_router(policy.router)
 
 @app.get("/healthcheck", tags=["System"])
 def health_check():

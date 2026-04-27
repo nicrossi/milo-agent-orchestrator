@@ -14,6 +14,8 @@ import re
 from src.policy.rules.base import BaseRule
 from src.policy.types import PolicyContext, QuestionPlan
 
+__evidence__ = ["narciss_2008_informative_tutoring_feedback"]
+
 _TRIGGER_PATTERNS = [
     # Spanish
     r"dame\s+la\s+respuesta",

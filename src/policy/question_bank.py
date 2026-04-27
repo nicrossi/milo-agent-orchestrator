@@ -1,7 +1,14 @@
-# All questions are in Spanish, matching Milo's primary interaction language.
-# Selection algorithm: iterate candidates in order, return the first whose ID is not
-# in recent_question_ids. If all have been asked, fall back to the first in the list.
+"""
+DEPRECATED (Phase 3): legacy compat shim.
 
+The Phase 3 question system lives in `src.policy.questions.*` (bank, selector,
+contextualizer, families). The engine imports from there directly.
+
+This module preserves the legacy `QUESTION_BANK[FSMState] -> list[(id, text)]`
+dict and `select_question(state, recent_ids)` signature so existing tests in
+test_question_bank.py keep passing without rewrite. New code should import
+from `src.policy.questions`. Do not extend this file.
+"""
 from src.policy.types import FSMState
 
 QUESTION_BANK: dict[FSMState, list[tuple[str, str]]] = {
