@@ -9,12 +9,14 @@ class AdminUserCreate(BaseModel):
     email: str = Field(..., pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=255)
     display_name: str = Field(..., min_length=1, max_length=255)
     password: Optional[str] = Field(None, min_length=6, max_length=128)
+    role: str = Field("student", pattern=r"^(teacher|student)$")
 
 
 class AdminUserResponse(BaseModel):
     uid: str
     email: str
     display_name: str
+    role: str = "student"
     password: Optional[str] = None  # only populated on creation
 
 

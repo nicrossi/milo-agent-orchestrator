@@ -54,25 +54,26 @@ async def bootstrap_authenticated_user(
         or (user.email.split("@")[0] if user.email else "")
     ).strip()
     email = str(user.email or "").strip() or f"{user.uid}@milo.local"
-    user_role = role if role in ("teacher", "student") else "student"
+    initial_role = role if role in ("teacher", "student") else "student"
 
     try:
         async with get_db_session() as db:
             from src.core.models import User
-            await db.execute(
+            result = await db.execute(
                 text(
                     """
                     INSERT INTO users (id, email, display_name, role)
                     VALUES (:id, :email, :display_name, :role)
                     ON CONFLICT (id) DO UPDATE
                     SET email = EXCLUDED.email,
-                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name),
-                        role = EXCLUDED.role
+                        display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name)
+                    RETURNING role
                     """
                 ),
-                {"id": user.uid, "email": email, "display_name": display_name, "role": user_role},
+                {"id": user.uid, "email": email, "display_name": display_name, "role": initial_role},
             )
-        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name, "role": user_role}
+            actual_role = result.scalar_one()
+        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name, "role": actual_role}
     except Exception:
         logger.error("Failed to bootstrap authenticated user into users table.", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to bootstrap user.")

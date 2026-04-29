@@ -85,6 +85,14 @@ def verify_token(token: str) -> AuthenticatedUser:
 
 def require_http_user(authorization: Optional[str] = Header(default=None)) -> AuthenticatedUser:
     if os.getenv("AUTH_REQUIRED", "true").lower() != "true":
+        # When auth is disabled, still try to verify a real token if one is provided
+        # so that frontend signups register the actual Firebase user, not the dev mock.
+        if authorization:
+            try:
+                token = _extract_bearer_token(authorization)
+                return verify_token(token)
+            except Exception:
+                pass
         return AuthenticatedUser(uid="dev-user", email="dev@example.com", claims={})
     token = _extract_bearer_token(authorization)
     return verify_token(token)

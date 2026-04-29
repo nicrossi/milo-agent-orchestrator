@@ -52,7 +52,7 @@ async def list_users():
     async with get_db_session() as db:
         rows = (await db.execute(select(User).order_by(User.display_name.asc()))).scalars().all()
         return [
-            AdminUserResponse(uid=u.id, email=u.email, display_name=u.display_name, password=None)
+            AdminUserResponse(uid=u.id, email=u.email, display_name=u.display_name, role=u.role or "student", password=None)
             for u in rows
         ]
 
@@ -79,22 +79,44 @@ async def create_user(payload: AdminUserCreate):
         await db.execute(
             text(
                 """
-                INSERT INTO users (id, email, display_name)
-                VALUES (:id, :email, :display_name)
+                INSERT INTO users (id, email, display_name, role)
+                VALUES (:id, :email, :display_name, :role)
                 ON CONFLICT (id) DO UPDATE
                 SET email = EXCLUDED.email,
-                    display_name = EXCLUDED.display_name
+                    display_name = EXCLUDED.display_name,
+                    role = EXCLUDED.role
                 """
             ),
-            {"id": fb_user.uid, "email": str(payload.email), "display_name": payload.display_name},
+            {"id": fb_user.uid, "email": str(payload.email), "display_name": payload.display_name, "role": payload.role},
         )
 
     return AdminUserResponse(
         uid=fb_user.uid,
         email=str(payload.email),
         display_name=payload.display_name,
+        role=payload.role,
         password=password,
     )
+
+
+@router.delete("/users/{uid}", status_code=200)
+async def delete_user(uid: str):
+    """Deletes a user from Firebase Auth and the local DB (cascades to all related rows)."""
+    _ensure_firebase_app()
+    # Delete from Firebase (ignore if already gone)
+    try:
+        fb_auth.delete_user(uid)
+    except fb_auth.UserNotFoundError:
+        pass
+    except Exception as e:
+        logger.error("Firebase user deletion failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Firebase deletion failed: {e}")
+
+    # Delete from DB — CASCADE handles sessions, messages, enrollments, etc.
+    async with get_db_session() as db:
+        await db.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": uid})
+
+    return {"ok": True, "deleted_uid": uid}
 
 
 async def _build_course_response(db, course: Course) -> AdminCourseResponse:

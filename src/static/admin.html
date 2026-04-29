@@ -47,12 +47,16 @@
         <input name="display_name" placeholder="Display name" required />
         <input name="email" type="email" placeholder="email@milo.test" required />
         <input name="password" type="text" placeholder="password (optional, auto-generated)" />
+        <select name="role" required>
+          <option value="student">Student</option>
+          <option value="teacher">Teacher</option>
+        </select>
         <button type="submit">Create</button>
       </div>
     </form>
     <h2>Users</h2>
     <table id="tbl-users">
-      <thead><tr><th>Display name</th><th>Email</th><th class="mono">UID</th></tr></thead>
+      <thead><tr><th>Display name</th><th>Email</th><th>Role</th><th class="mono">UID</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>
@@ -113,17 +117,38 @@ function copy(text){ navigator.clipboard.writeText(text).then(()=>toast('Copied:
 async function loadUsers(){
   users = await api('GET','/admin/users');
   const tbody = $('#tbl-users tbody');
-  tbody.innerHTML = users.length ? '' : '<tr><td colspan="3" class="empty">no users yet</td></tr>';
+  tbody.innerHTML = users.length ? '' : '<tr><td colspan="4" class="empty">no users yet</td></tr>';
   for(const u of users){
+    const roleBadge = u.role === 'teacher'
+      ? `<span style="color:var(--good);font-weight:600">teacher</span>`
+      : `<span style="color:var(--muted)">student</span>`;
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${u.display_name}</td><td>${u.email}</td><td class="mono">${u.uid} <button class="copy" onclick="copy('${u.uid}')">copy</button></td>`;
+    tr.innerHTML = `<td>${u.display_name}</td><td>${u.email}</td><td>${roleBadge}</td><td class="mono">${u.uid} <button class="copy" onclick="copy('${u.uid}')">copy</button></td><td><button class="danger" data-uid="${u.uid}" data-name="${u.display_name}">Delete</button></td>`;
     tbody.appendChild(tr);
   }
-  for(const sel of [document.querySelector('select[name=teacher_id]'), document.querySelector('select[name=student_id]')]){
-    const cur = sel.value;
-    sel.innerHTML = `<option value="">— select ${sel.name==='teacher_id'?'teacher':'student'} —</option>` +
-      users.map(u=>`<option value="${u.uid}">${u.display_name} · ${u.email}</option>`).join('');
-    sel.value = cur;
+  const teachers = users.filter(u => u.role === 'teacher');
+  const students = users.filter(u => u.role === 'student');
+  const teacherSel = document.querySelector('select[name=teacher_id]');
+  const studentSel = document.querySelector('select[name=student_id]');
+  const curTeacher = teacherSel.value;
+  const curStudent = studentSel.value;
+  teacherSel.innerHTML = `<option value="">— select teacher —</option>` +
+    teachers.map(u=>`<option value="${u.uid}">${u.display_name} · ${u.email}</option>`).join('');
+  studentSel.innerHTML = `<option value="">— select student —</option>` +
+    students.map(u=>`<option value="${u.uid}">${u.display_name} · ${u.email}</option>`).join('');
+  teacherSel.value = curTeacher;
+  studentSel.value = curStudent;
+
+  for(const btn of document.querySelectorAll('#tbl-users button.danger')){
+    btn.addEventListener('click', async () => {
+      if(!confirm(`Delete "${btn.dataset.name}"? This removes them from Firebase and the local DB.`)) return;
+      try{
+        await api('DELETE', `/admin/users/${btn.dataset.uid}`);
+        await loadUsers();
+        await loadCourses();
+        toast(`Deleted ${btn.dataset.name}`, 'ok');
+      }catch(e){ toast(e.message, 'err'); }
+    });
   }
 }
 

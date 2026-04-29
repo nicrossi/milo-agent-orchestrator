@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.api.routers import activities, admin, chat, courses, policy
+from src.api.routers import activities, admin, chat, courses, me, policy, students
 from src.core.database import init_db, close_db
 from src.services.rag import IntegratedRAGService
 
@@ -57,6 +57,8 @@ app.add_middleware(
 app.include_router(chat.router)
 app.include_router(activities.router)
 app.include_router(courses.router)
+app.include_router(students.router)
+app.include_router(me.router)
 app.include_router(admin.router)
 app.include_router(policy.router)
 
