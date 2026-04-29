@@ -26,7 +26,7 @@ class BaseLLMAdapter(ABC):
         pass
 
     @abstractmethod
-    def generate_evaluation(
+    async def generate_evaluation(
         self,
         prompt: str,
     ) -> str:

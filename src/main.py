@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.routers import activities, admin, chat, courses, me, policy, students
 from src.core.database import init_db, close_db
 from src.services.rag import IntegratedRAGService
+from src.services.metrics_evaluator import start_worker, stop_worker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,8 +30,14 @@ async def lifespan(app: FastAPI):
     rag_service.start()
     logger.info("RAG service ready.")
 
+    logger.info("Starting up — background evaluation worker…")
+    await start_worker()
+
     yield
 
+    logger.info("Shutting down — background evaluation worker…")
+    await stop_worker()
+    
     logger.info("Shutting down — closing RAG process pool…")
     rag_service.stop()
     logger.info("Shutting down — closing database…")

@@ -103,9 +103,9 @@ class GeminiAdapter(BaseLLMAdapter):
             )
             raise RuntimeError("Failed to generate response from the LLM") from e
 
-    def generate_evaluation(self, prompt: str) -> str:
+    async def generate_evaluation(self, prompt: str) -> str:
         try:
-            response = self.client.models.generate_content(
+            response = await self.client.aio.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -115,14 +115,13 @@ class GeminiAdapter(BaseLLMAdapter):
                 ),
             )
             return response.text
-            return response.text
         except Exception as e:
             logger.error(
                 "LLM evaluation failed (model=%s)",
                 self.model_name,
                 exc_info=True,
             )
-            raise RuntimeError("Failed to generate evaluation from the LLM") from e
+            raise RuntimeError(f"Failed to generate evaluation from the LLM: {str(e)}") from e
 
     # Async streaming generation
 

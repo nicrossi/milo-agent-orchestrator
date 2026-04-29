@@ -27,7 +27,7 @@ from src.policy.types import (
     RecoveryState,
     UserSignals,
 )
-from src.services.metrics_evaluator import evaluate_session
+from src.services.metrics_evaluator import queue_evaluation
 
 logger = logging.getLogger("milo-orchestrator.session")
 
@@ -43,22 +43,6 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 _AUTO_EVALUATE_ON_CHAT_CLOSE = _env_flag("AUTO_EVALUATE_ON_CHAT_CLOSE", default=True)
-
-
-async def run_llm_evaluator(session_id: uuid.UUID, agent: OrchestratorAgent,) -> None:
-    try:
-        if not agent:
-            logger.error("No agent available for evaluation.")
-            return
-
-        await evaluate_session(session_id, agent)
-    except Exception as e:
-        logger.error(f"Evaluating session {session_id} failed: {e}")
-        async with get_db_session() as db:
-            session = await db.get(ChatSessionModel, session_id)
-            if session:
-                session.status = SessionStatus.EVALUATION_FAILED
-                await db.commit()
 
 
 class ChatSession:
@@ -239,7 +223,7 @@ class ChatSession:
                 return
 
             # Non-blocking background task scheduling
-            asyncio.create_task(run_llm_evaluator(self._session_id_uuid, self._agent))
+            await queue_evaluation(self._session_id_uuid, self._agent)
         except Exception as e:
             logger.error(f"Failed to wrap up session {self._session_id}: {e}")
 
