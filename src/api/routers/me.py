@@ -14,6 +14,7 @@ def _serialize(user: User) -> MeResponse:
         email=user.email or "",
         display_name=user.display_name or "",
         role=user.role or "student",
+        photo_data_url=user.photo_data_url,
     )
 
 
@@ -35,6 +36,18 @@ async def update_me(
         row = await db.get(User, user.uid)
         if row is None:
             raise HTTPException(status_code=404, detail="User not found.")
-        row.display_name = payload.display_name.strip()
+
+        fields_set = payload.model_fields_set
+        if "display_name" in fields_set and payload.display_name is not None:
+            row.display_name = payload.display_name.strip()
+        if "photo_data_url" in fields_set:
+            value = payload.photo_data_url
+            if value and not value.startswith("data:image/"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="photo_data_url must be a data:image/* URL.",
+                )
+            row.photo_data_url = value or None
+
         await db.flush()
         return _serialize(row)

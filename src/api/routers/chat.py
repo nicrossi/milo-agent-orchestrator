@@ -67,13 +67,22 @@ async def bootstrap_authenticated_user(
                     ON CONFLICT (id) DO UPDATE
                     SET email = EXCLUDED.email,
                         display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name)
-                    RETURNING role
+                    RETURNING role, photo_data_url
                     """
                 ),
                 {"id": user.uid, "email": email, "display_name": display_name, "role": initial_role},
             )
-            actual_role = result.scalar_one()
-        return {"ok": True, "user_id": user.uid, "email": email, "display_name": display_name, "role": actual_role}
+            row = result.one()
+            actual_role = row.role
+            photo_data_url = row.photo_data_url
+        return {
+            "ok": True,
+            "user_id": user.uid,
+            "email": email,
+            "display_name": display_name,
+            "role": actual_role,
+            "photo_data_url": photo_data_url,
+        }
     except Exception:
         logger.error("Failed to bootstrap authenticated user into users table.", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to bootstrap user.")

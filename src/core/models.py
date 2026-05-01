@@ -66,6 +66,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="student")
+    photo_data_url: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ActivityStatus(str, PyEnum):
