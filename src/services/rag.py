@@ -34,13 +34,31 @@ class VectorDBRepository:
 
     @staticmethod
     async def search_similar(
-        db: AsyncSession, vector: List[float], limit: int, user_id: str | None = None
+        db: AsyncSession,
+        vector: List[float],
+        limit: int,
+        user_id: str | None = None,
+        activity_id: str | None = None,
     ) -> List[str]:
         # The embedding vector is an internal List[float]
         # (never user input) so it is safe to inline it as
         # a literal string directly into the SQL expression.
         vector_literal = str(vector)
-        if user_id:
+        # Activity-scoped retrieval takes precedence: when a student is
+        # chatting inside an activity, every student on that activity should
+        # see the same teacher-provided embeddings (joined on activity_id).
+        if activity_id:
+            sql = text(f"""
+                SELECT chunk_text
+                FROM document_embeddings
+                WHERE activity_id = :activity_id
+                ORDER BY embedding <=> '{vector_literal}'::vector ASC
+                LIMIT :limit
+            """)
+            result = await db.execute(
+                sql, {"limit": limit, "activity_id": activity_id}
+            )
+        elif user_id:
             sql = text(f"""
                 SELECT chunk_text
                 FROM document_embeddings
@@ -95,7 +113,12 @@ class IntegratedRAGService:
             logger.info("Integrated RAG Process Pool shut down.")
 
     async def retrieve_context(
-        self, db: AsyncSession, query: str, limit: int = 3, user_id: str | None = None
+        self,
+        db: AsyncSession,
+        query: str,
+        limit: int = 3,
+        user_id: str | None = None,
+        activity_id: str | None = None,
     ) -> List[str]:
         """Main entry point called by the OrchestratorAgent."""
         if not self._pool:
@@ -113,7 +136,9 @@ class IntegratedRAGService:
 
         # Async pgvector DB retrieval
         try:
-            return await VectorDBRepository.search_similar(db, vector, limit, user_id=user_id)
+            return await VectorDBRepository.search_similar(
+                db, vector, limit, user_id=user_id, activity_id=activity_id
+            )
         except Exception as e:
             logger.error("Database vector search failed", exc_info=True)
             raise RuntimeError("Failed to retrieve documents from DB.") from e

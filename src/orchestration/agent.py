@@ -113,7 +113,13 @@ class OrchestratorAgent:
         if query: # Only persist and query if user sends a message. Greeting uses empty query.
             await self._persist_user_message(db, user_id, session_id, query)
 
-        rag_chunks = await self.rag_service.retrieve_context(db, query, user_id=user_id) if query else []
+        rag_chunks = (
+            await self.rag_service.retrieve_context(
+                db, query, user_id=user_id, activity_id=activity_id
+            )
+            if query
+            else []
+        )
         context_chunks = self._compose_context(
             rag_chunks, cross_chat_memory, context_description,
             prompt_directives=prompt_directives or [],
