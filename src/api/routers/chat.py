@@ -1,7 +1,8 @@
 import logging
+from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, BackgroundTasks
 from sqlalchemy import text
 from src.core.database import get_db_session
 
@@ -91,11 +92,19 @@ async def bootstrap_authenticated_user(
 @router.get("/history/{session_id}")
 async def get_session_history(
     session_id: str,
-    limit: int = 200,
+    limit: int = 50,
+    cursor: Optional[datetime] = Query(
+        None,
+        description="ISO-8601 timestamp; returns messages strictly older than this.",
+    ),
     user: AuthenticatedUser = Depends(require_http_user),
     agent: OrchestratorAgent = Depends(get_agent),
 ):
-    """Return persisted session history for the authenticated user."""
+    """Return persisted session history for the authenticated user.
+
+    Cursor-based pagination: pass `cursor=<created_at of oldest visible msg>`
+    to load the previous page. Empty `messages` array signals end of history.
+    """
     if agent is None:
         raise HTTPException(status_code=503, detail=_AGENT_OFFLINE_MSG)
 
@@ -105,7 +114,9 @@ async def get_session_history(
     try:
         async with get_db_session() as db:
             await agent.history_repo.validate_session_owner(db, session_id, user.uid)
-            rows = await agent.history_repo.get_history_records(db, user.uid, session_id, limit=limit)
+            rows = await agent.history_repo.get_history_records(
+                db, user.uid, session_id, limit=limit, cursor=cursor
+            )
 
         messages = [
             {
@@ -125,6 +136,54 @@ async def get_session_history(
     except Exception:
         logger.error("Failed to load session history.", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to load session history.")
+
+
+@router.get("/activities/{activity_id}/history")
+async def get_activity_history(
+    activity_id: str,
+    limit: int = 50,
+    cursor: Optional[datetime] = Query(
+        None,
+        description="ISO-8601 timestamp; returns messages strictly older than this.",
+    ),
+    user: AuthenticatedUser = Depends(require_http_user),
+    agent: OrchestratorAgent = Depends(get_agent),
+):
+    """Return persisted history for the authenticated user across every
+    chat session they have had on this activity.
+
+    Frontend treats activity_id as the conversation id; this endpoint spans
+    all underlying ChatSession rows for (activity, student). Cursor-based
+    pagination on `created_at`. Empty `messages` array signals end of history.
+    """
+    if agent is None:
+        raise HTTPException(status_code=503, detail=_AGENT_OFFLINE_MSG)
+
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 500.")
+
+    try:
+        async with get_db_session() as db:
+            rows = await agent.history_repo.get_activity_history_records(
+                db, user.uid, activity_id, limit=limit, cursor=cursor
+            )
+
+        messages = [
+            {
+                "id": str(row.id),
+                "session_id": str(row.session_id) if row.session_id is not None else None,
+                "role": row.role,
+                "content": row.content,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ]
+        return {"activity_id": activity_id, "messages": messages}
+    except HTTPException:
+        raise
+    except Exception:
+        logger.error("Failed to load activity history.", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load activity history.")
 
 
 @router.websocket("/activities/{activity_id}")

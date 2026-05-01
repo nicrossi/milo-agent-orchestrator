@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import List, Dict, Union, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,9 +71,16 @@ class ChatHistoryRepository:
             session: AsyncSession,
             user_id: str,
             session_id: str,
-            limit: int = 200,
+            limit: int = 50,
+            cursor: Optional[datetime] = None,
     ) -> List[UIMessageDTO]:
-        """Load chat rows for UI rendering (chronological order)."""
+        """Load chat rows for UI rendering (chronological order).
+
+        Cursor-based pagination: when `cursor` is set, return the newest
+        `limit` rows strictly older than `cursor`. Sort desc in SQL, reverse
+        in Python so the returned slice is ascending and the frontend can
+        prepend it directly.
+        """
         session_uuid = cls._to_uuid(session_id)
         if not session_uuid:
             return []
@@ -80,10 +88,13 @@ class ChatHistoryRepository:
         stmt = (
             select(ChatMessage)
             .where(ChatMessage.session_id == session_uuid, ChatMessage.user_id == user_id)
-            .order_by(ChatMessage.created_at.asc())
-            .limit(limit)
         )
+        if cursor is not None:
+            stmt = stmt.where(ChatMessage.created_at < cursor)
+        stmt = stmt.order_by(ChatMessage.created_at.desc()).limit(limit)
+
         result = await session.execute(stmt)
+        rows = list(result.scalars().all())
         return [
             UIMessageDTO(
                 id=row.id,
@@ -92,7 +103,48 @@ class ChatHistoryRepository:
                 content=row.content,
                 created_at=row.created_at,
             )
-            for row in result.scalars().all()
+            for row in reversed(rows)
+        ]
+
+    @classmethod
+    async def get_activity_history_records(
+            cls,
+            session: AsyncSession,
+            user_id: str,
+            activity_id: str,
+            limit: int = 50,
+            cursor: Optional[datetime] = None,
+    ) -> List[UIMessageDTO]:
+        """Activity-scoped UI history across all sessions a student has had
+        in a given activity. Cursor-based pagination, ascending output.
+        """
+        activity_uuid = cls._to_uuid(activity_id)
+        if not activity_uuid:
+            return []
+
+        stmt = (
+            select(ChatMessage)
+            .join(ChatSession, ChatMessage.session_id == ChatSession.id)
+            .where(
+                ChatSession.activity_id == activity_uuid,
+                ChatMessage.user_id == user_id,
+            )
+        )
+        if cursor is not None:
+            stmt = stmt.where(ChatMessage.created_at < cursor)
+        stmt = stmt.order_by(ChatMessage.created_at.desc()).limit(limit)
+
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        return [
+            UIMessageDTO(
+                id=row.id,
+                session_id=row.session_id,
+                role=row.role,
+                content=row.content,
+                created_at=row.created_at,
+            )
+            for row in reversed(rows)
         ]
 
     @classmethod
