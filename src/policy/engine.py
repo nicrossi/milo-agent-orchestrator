@@ -55,14 +55,21 @@ CLOSURE_SENTINEL = "[[END_REFLECTION]]"
 CLOSURE_MIN_TURNS = 4
 
 _CLOSURE_DIRECTIVE = (
-    "Closure protocol: if — and only if — the student has reached a clear "
-    "natural endpoint of their reflection (they articulated a takeaway, named "
-    "a concrete next step, or otherwise signaled they are done), end your "
-    "response with the literal token "
-    f"{CLOSURE_SENTINEL} on its own final line. Do not include this token in "
-    "any other situation, do not mention it to the student, and do not emit "
-    "it after a single short message. When in doubt, do not emit it and keep "
-    "asking your Socratic question as planned."
+    "Closure protocol. ONLY when the student has clearly reached a natural "
+    "endpoint of their reflection (they articulated a takeaway, named a "
+    "concrete next step, or otherwise signaled they are done), produce a "
+    "closing turn instead of another Socratic question. The closing turn "
+    "must contain ALL of:\n"
+    "  1. A short, warm acknowledgement of what they reflected on (1 sentence).\n"
+    "  2. An explicit statement that the activity is now complete — phrasing "
+    "like 'Your reflection on this activity is complete' or 'You can finish "
+    "this activity here'. Match the language the student has been using.\n"
+    "  3. The literal token "
+    f"{CLOSURE_SENTINEL} on its OWN final line, with no other text after it.\n"
+    "Do NOT ask any question in a closing turn. Do NOT emit the token in any "
+    "other situation, do not mention it to the student, and do not emit it "
+    "after a single short message. When in doubt, do not close: continue the "
+    "Socratic dialogue as planned."
 )
 
 # Module-level singletons — stateless, safe to share across all sessions.

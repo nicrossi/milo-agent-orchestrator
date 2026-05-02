@@ -139,13 +139,38 @@ class ChatSession:
 
         try:
             async with get_db_session() as db:
+                # If the student already finalized this activity, the WS must
+                # NOT open a new session and re-greet — the activity is closed
+                # for them. Tell the client and bail.
+                already_finalized_stmt = (
+                    select(ChatSessionModel)
+                    .where(ChatSessionModel.activity_id == activity_uuid)
+                    .where(ChatSessionModel.student_id == self._user_id)
+                    .where(ChatSessionModel.finalized_at.is_not(None))
+                    .order_by(ChatSessionModel.finalized_at.desc())
+                    .limit(1)
+                )
+                already_finalized = (
+                    await db.execute(already_finalized_stmt)
+                ).scalar_one_or_none()
+                if already_finalized is not None:
+                    logger.info(
+                        "User=%s already finalized activity=%s on %s — refusing new session.",
+                        self._user_id, activity_uuid, already_finalized.finalized_at,
+                    )
+                    await self._send_json({
+                        "type": "already_finalized",
+                        "session_id": str(already_finalized.id),
+                        "finalized_at": already_finalized.finalized_at.isoformat(),
+                    })
+                    await self._ws.close(code=1000, reason="Activity already completed")
+                    return False
+
                 # Resume the most recent non-finalized session for this
                 # (user, activity), regardless of age. The LLM is the sole
                 # judge of "done" via finalized_at — if it never fired, the
                 # student is still mid-reflection and we want to preserve
                 # their policy_state and transcript whenever they come back.
-                # finalized_at IS NOT NULL means the LLM already closed it;
-                # we leave that one alone and create a fresh session below.
                 resumable_stmt = (
                     select(ChatSessionModel)
                     .where(ChatSessionModel.activity_id == activity_uuid)
@@ -458,16 +483,24 @@ class ChatSession:
                     )
                     return
 
-            # Step 4: output interception
+            # Step 4: output interception.
+            # Skip the interceptors when the LLM emitted the closure sentinel —
+            # the closing message is intentional and must NOT have a Socratic
+            # question appended by the rhetorical/direct-answer interceptors.
+            # Otherwise the student sees a goodbye followed by another question
+            # and the turn reads as continuation, not closure. State update +
+            # `done` frame still run normally below.
             if decision is not None:
-                full_response = "".join(accumulated)
-                was_intercepted, final_text = _policy_engine.check_output(full_response, decision)
-                if was_intercepted:
-                    correction = final_text[len(full_response):]
-                    await self._send_json({"type": "chunk", "text": correction})
-                    logger.info(
-                        "Session '%s': interceptor fired — correction appended.", self._session_id
-                    )
+                was_intercepted = False
+                if not sentinel_detected:
+                    full_response = "".join(accumulated)
+                    was_intercepted, final_text = _policy_engine.check_output(full_response, decision)
+                    if was_intercepted:
+                        correction = final_text[len(full_response):]
+                        await self._send_json({"type": "chunk", "text": correction})
+                        logger.info(
+                            "Session '%s': interceptor fired — correction appended.", self._session_id
+                        )
 
                 # Step 5: update policy state
                 self._fsm_state = decision.next_state
@@ -515,7 +548,24 @@ class ChatSession:
                                 )
                                 if session_row is not None and session_row.finalized_at is None:
                                     session_row.finalized_at = datetime.now(timezone.utc)
-                                    await db.commit()
+                                # The agent persists chat_messages chunk-by-chunk
+                                # raw, so the latest model row still contains the
+                                # sentinel even though the student never saw it.
+                                # Strip it from the DB so transcripts read clean.
+                                latest_msg = (
+                                    await db.execute(
+                                        select(ChatMessage)
+                                        .where(ChatMessage.session_id == self._session_id_uuid)
+                                        .where(ChatMessage.role == "model")
+                                        .order_by(ChatMessage.created_at.desc())
+                                        .limit(1)
+                                    )
+                                ).scalar_one_or_none()
+                                if latest_msg and CLOSURE_SENTINEL in latest_msg.content:
+                                    latest_msg.content = (
+                                        latest_msg.content.replace(CLOSURE_SENTINEL, "").rstrip()
+                                    )
+                                await db.commit()
                         except Exception:
                             logger.exception(
                                 "Session '%s': failed to persist finalized_at.",

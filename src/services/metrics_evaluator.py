@@ -14,11 +14,12 @@ from pathlib import Path
 
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.core.database import get_db_session
 from src.core.models import (
     ActivityCourseAssignment,
+    ChatMessage,
     ChatSession,
     Course,
     CourseEnrollment,
@@ -184,6 +185,26 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             if not activity:
                 raise ValueError(f"Activity {session.activity_id} not found")
 
+            # Skip evaluation if the student never typed anything. A WS open
+            # always logs the model's greeting, so transcript is non-empty
+            # even for zero-engagement visits — counting user messages is the
+            # honest check.
+            user_msg_count = (
+                await db.execute(
+                    select(func.count(ChatMessage.id))
+                    .where(ChatMessage.session_id == session_id)
+                    .where(ChatMessage.role == "user")
+                )
+            ).scalar_one()
+            if user_msg_count == 0:
+                logger.info(
+                    "Session %s has zero user messages — skipping evaluation.",
+                    session_id,
+                )
+                session.status = SessionStatus.EVALUATED
+                await db.commit()
+                return
+
             stmt = (
                 select(ChatSession.transcript)
                 .where(
@@ -195,12 +216,13 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             )
             result = await db.execute(stmt)
             transcripts = result.scalars().all()
-            
+
             transcript = "\n\n".join(transcripts).strip()
-            
+
             if not transcript:
                 logger.info("Empty cumulative transcript for session %s. Skipping LLM evaluation.", session_id)
                 session.status = SessionStatus.EVALUATED
+                await db.commit()
                 return
 
             prompt = _build_evaluation_prompt(
@@ -345,9 +367,23 @@ async def _maybe_notify_teacher_all_completed(activity_id) -> None:
             )
             return
 
-        # Mark BEFORE sending so concurrent evaluations don't double-fire.
-        activity.all_completed_notified_at = datetime.now(timezone.utc)
+        # Atomic compare-and-swap: only the worker that successfully flips
+        # all_completed_notified_at from NULL to now() proceeds to send the
+        # email. Any concurrent evaluation that races here finds rowcount=0
+        # and bails. Fixes the duplicate-notification bug.
+        result = await db.execute(
+            update(ReflectionActivity)
+            .where(ReflectionActivity.id == activity_id)
+            .where(ReflectionActivity.all_completed_notified_at.is_(None))
+            .values(all_completed_notified_at=datetime.now(timezone.utc))
+        )
         await db.commit()
+        if (result.rowcount or 0) == 0:
+            logger.info(
+                "Activity %s: another worker already sent the completion notice — skipping.",
+                activity_id,
+            )
+            return
 
         teacher_email = teacher.email
         teacher_name = teacher.display_name or ""
