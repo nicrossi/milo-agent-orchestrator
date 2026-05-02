@@ -6,16 +6,24 @@ import asyncio
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Optional, List
 import uuid
 
 from fastapi import WebSocket, BackgroundTasks
+from sqlalchemy import select
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from src.core.database import get_db_session
-from src.core.models import ChatSession as ChatSessionModel, SessionStatus, SessionMetric, ReflectionActivity
+from src.core.models import (
+    ChatMessage,
+    ChatSession as ChatSessionModel,
+    ReflectionActivity,
+    SessionMetric,
+    SessionStatus,
+)
 from src.orchestration.agent import OrchestratorAgent
-from src.policy.engine import PolicyEngine
+from src.policy.engine import CLOSURE_MIN_TURNS, CLOSURE_SENTINEL, PolicyEngine
 from src.policy.metrics import MetricsCollector
 from src.policy.persistence import PolicyStateSnapshot
 from src.policy.signals.aggregator import build_user_signals, message_word_count
@@ -28,6 +36,7 @@ from src.policy.types import (
     UserSignals,
 )
 from src.services.metrics_evaluator import queue_evaluation
+from src.services.notifications import notify_unfinished_activity
 
 logger = logging.getLogger("milo-orchestrator.session")
 
@@ -85,6 +94,10 @@ class ChatSession:
         self._turns_since_meta_feedback: int = 99
         # Phase 5: per-session policy metrics collector.
         self._metrics = MetricsCollector()
+        # Set when the LLM emits CLOSURE_SENTINEL (and the turn-count guardrail
+        # passes). Drives the conversation loop to break after this turn and
+        # marks ChatSession.finalized_at.
+        self._should_close: bool = False
 
     async def run(self) -> None:
         """Main entry point for the WebSocket handler."""
@@ -126,22 +139,19 @@ class ChatSession:
 
         try:
             async with get_db_session() as db:
-                # Phase 5: try to resume a recent session for this user+activity
-                # before creating a new one. Resume any session that has a
-                # persisted policy_state within the cutoff window, regardless
-                # of evaluation status — the student returning to continue is
-                # the same UX whether the prior eval succeeded, failed, or is
-                # still pending. On resume we flip status back to IN_PROGRESS.
-                from datetime import datetime, timedelta, timezone
-                from sqlalchemy import select
-
-                resume_cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
+                # Resume the most recent non-finalized session for this
+                # (user, activity), regardless of age. The LLM is the sole
+                # judge of "done" via finalized_at — if it never fired, the
+                # student is still mid-reflection and we want to preserve
+                # their policy_state and transcript whenever they come back.
+                # finalized_at IS NOT NULL means the LLM already closed it;
+                # we leave that one alone and create a fresh session below.
                 resumable_stmt = (
                     select(ChatSessionModel)
                     .where(ChatSessionModel.activity_id == activity_uuid)
                     .where(ChatSessionModel.student_id == self._user_id)
+                    .where(ChatSessionModel.finalized_at.is_(None))
                     .where(ChatSessionModel.policy_state.is_not(None))
-                    .where(ChatSessionModel.started_at >= resume_cutoff)
                     .order_by(ChatSessionModel.started_at.desc())
                     .limit(1)
                 )
@@ -200,7 +210,8 @@ class ChatSession:
 
         try:
             async with get_db_session() as db:
-                if session := await db.get(ChatSessionModel, self._session_id_uuid):
+                session = await db.get(ChatSessionModel, self._session_id_uuid)
+                if session is not None:
                     session.status = SessionStatus.PENDING_EVALUATION
                     # Phase 5: snapshot the final policy_state for resumption
                     # (brief window before LLM evaluator marks EVALUATED).
@@ -214,6 +225,30 @@ class ChatSession:
                     db.add(metric_row)
                 metric_row.policy_metrics = self._metrics.snapshot()
                 await db.commit()
+
+                # If the LLM never marked this session finalized AND the
+                # student actually engaged (≥ 1 user message), drop an
+                # in-app "unfinished activity" notification so the bell
+                # surfaces a resume-link on the home page.
+                if session is not None and session.finalized_at is None:
+                    user_msg_count = (
+                        await db.execute(
+                            select(ChatMessage.id)
+                            .where(ChatMessage.session_id == self._session_id_uuid)
+                            .where(ChatMessage.role == "user")
+                            .limit(1)
+                        )
+                    ).first()
+                    if user_msg_count is not None:
+                        activity = await db.get(ReflectionActivity, session.activity_id)
+                        if activity is not None:
+                            await notify_unfinished_activity(
+                                db,
+                                user_id=self._user_id,
+                                activity_id=activity.id,
+                                activity_title=activity.title,
+                            )
+                            await db.commit()
 
             if not _AUTO_EVALUATE_ON_CHAT_CLOSE:
                 logger.info(
@@ -246,6 +281,17 @@ class ChatSession:
 
     async def _conversation_loop(self) -> None:
         while True:
+            if self._should_close:
+                # The previous turn ended with the LLM's closure sentinel.
+                # Hold the WebSocket open for a moment so the client receives
+                # the session_complete frame; then exit and let _wrap_up_session
+                # run via the finally block.
+                logger.info(
+                    "Session '%s': loop exiting after LLM closure.",
+                    self._session_id,
+                )
+                break
+
             user_text = await self._receive_message()
             if user_text is None:
                 break
@@ -308,6 +354,7 @@ class ChatSession:
             # Step 1: derive turn count from history length
             prompt_directives: List[str] = []
             decision = None
+            turn_count = 0
             try:
                 async with get_db_session() as db:
                     history = await self._agent.history_repo.get_history(
@@ -371,8 +418,13 @@ class ChatSession:
                     self._session_id, exc, exc_info=True,
                 )
 
-            # Step 3: stream with directives injected
+            # Step 3: stream with directives injected.
+            # We hold back enough trailing characters to safely detect and
+            # strip the closure sentinel before flushing the final chunk to
+            # the client. This guarantees the student never sees the token.
             accumulated: List[str] = []
+            tail_buffer = ""
+            tail_size = len(CLOSURE_SENTINEL) + 8  # slack for whitespace/newlines
             async with get_db_session() as db:
                 stream = self._agent.process_session_stream(
                     db, self._user_id, self._session_id, user_text,
@@ -380,12 +432,31 @@ class ChatSession:
                     prompt_directives=prompt_directives,
                 )
                 async for chunk in stream:
-                    accumulated.append(chunk)
-                    if not await self._send_json({"type": "chunk", "text": chunk}):
-                        logger.info(
-                            "Session '%s': client dropped mid-stream - halting.", self._session_id
-                        )
-                        return
+                    tail_buffer += chunk
+                    if len(tail_buffer) > tail_size:
+                        head = tail_buffer[:-tail_size]
+                        tail_buffer = tail_buffer[-tail_size:]
+                        accumulated.append(head)
+                        if not await self._send_json({"type": "chunk", "text": head}):
+                            logger.info(
+                                "Session '%s': client dropped mid-stream - halting.",
+                                self._session_id,
+                            )
+                            return
+
+            # End of stream — flush the held-back tail, stripping the sentinel
+            # if the LLM emitted it.
+            sentinel_detected = CLOSURE_SENTINEL in tail_buffer
+            if sentinel_detected:
+                tail_buffer = tail_buffer.replace(CLOSURE_SENTINEL, "").rstrip()
+            if tail_buffer:
+                accumulated.append(tail_buffer)
+                if not await self._send_json({"type": "chunk", "text": tail_buffer}):
+                    logger.info(
+                        "Session '%s': client dropped mid-stream - halting.",
+                        self._session_id,
+                    )
+                    return
 
             # Step 4: output interception
             if decision is not None:
@@ -432,6 +503,35 @@ class ChatSession:
             # Mark when this Milo response finished so the next turn's latency
             # can be measured correctly.
             self._last_milo_response_ts = time.time()
+
+            # Step 7: honor the LLM's closure sentinel, if any.
+            if sentinel_detected:
+                if turn_count >= CLOSURE_MIN_TURNS:
+                    if self._session_id_uuid is not None:
+                        try:
+                            async with get_db_session() as db:
+                                session_row = await db.get(
+                                    ChatSessionModel, self._session_id_uuid
+                                )
+                                if session_row is not None and session_row.finalized_at is None:
+                                    session_row.finalized_at = datetime.now(timezone.utc)
+                                    await db.commit()
+                        except Exception:
+                            logger.exception(
+                                "Session '%s': failed to persist finalized_at.",
+                                self._session_id,
+                            )
+                    await self._send_json({"type": "session_complete"})
+                    self._should_close = True
+                    logger.info(
+                        "Session '%s': finalized by LLM closure sentinel.",
+                        self._session_id,
+                    )
+                else:
+                    logger.warning(
+                        "Session '%s': closure sentinel ignored at turn %d (< %d).",
+                        self._session_id, turn_count, CLOSURE_MIN_TURNS,
+                    )
 
         except PermissionError:
             await self._send_error("No tenes permiso para acceder a esta conversacion.")

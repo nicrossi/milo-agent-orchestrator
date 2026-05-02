@@ -36,11 +36,33 @@ from src.policy.rules.no_direct_answers import NoDirectAnswersRule
 from src.policy.rules.tone_by_confidence import ToneByConfidenceRule
 from src.policy.scores import compute_scores
 from src.policy.types import (
+    FSMState,
     PolicyContext,
     PolicyDecision,
     QuestionPlan,
     RecoveryState,
     ResponseConstraints,
+)
+
+# Token the LLM emits at the very end of its response when it judges the
+# reflection has reached natural closure. session.py parses + strips it from
+# the streamed output and finalizes the chat session in DB.
+CLOSURE_SENTINEL = "[[END_REFLECTION]]"
+
+# Earliest turn at which closure is allowed. Below this, even if the LLM emits
+# the sentinel, session.py will ignore it (logged warning). Prevents accidental
+# closures of conversations that barely started.
+CLOSURE_MIN_TURNS = 4
+
+_CLOSURE_DIRECTIVE = (
+    "Closure protocol: if — and only if — the student has reached a clear "
+    "natural endpoint of their reflection (they articulated a takeaway, named "
+    "a concrete next step, or otherwise signaled they are done), end your "
+    "response with the literal token "
+    f"{CLOSURE_SENTINEL} on its own final line. Do not include this token in "
+    "any other situation, do not mention it to the student, and do not emit "
+    "it after a single short message. When in doubt, do not emit it and keep "
+    "asking your Socratic question as planned."
 )
 
 # Module-level singletons — stateless, safe to share across all sessions.
@@ -142,6 +164,18 @@ class PolicyEngine:
                 applied.append(result)
                 if not rule.essential:
                     any_non_essential_fired = True
+
+        # Closure eligibility — let the LLM decide when reflection is done.
+        # Inject the sentinel directive only after the student has had time to
+        # actually reflect (>= CLOSURE_MIN_TURNS) and the FSM is past PLANNING.
+        # Recovery (STABILIZE) and PLANNING explicitly exclude — wrapping up
+        # a confused or barely-started reflection would be premature.
+        if (
+            ctx.turn_count >= CLOSURE_MIN_TURNS
+            and next_state in (FSMState.MONITORING, FSMState.EVALUATION)
+            and next_recovery == RecoveryState.NORMAL
+        ):
+            plan.prompt_directives.append(_CLOSURE_DIRECTIVE)
 
         return PolicyDecision(
             next_state=next_state,

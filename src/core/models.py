@@ -124,6 +124,17 @@ class ReflectionActivity(Base):
     context_description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[ActivityStatus] = mapped_column(String(50), default=ActivityStatus.PUBLISHED)
     created_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    # Nullable for backwards compat with rows created before this column existed;
+    # the API requires a deadline on creation going forward.
+    deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    deadline_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    all_completed_notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SessionStatus(str, PyEnum):
@@ -143,6 +154,13 @@ class ChatSession(Base):
     transcript: Mapped[str] = mapped_column(Text, server_default="", default="")
     # Phase 5: serialized PolicyStateSnapshot for resumable sessions.
     policy_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Set by the LLM when it judges the reflection has reached natural closure.
+    # Status (PENDING_EVALUATION/EVALUATED) tracks the metrics-evaluation
+    # pipeline; finalized_at separately tracks "the activity is truly done".
+    # Resume logic and downstream notifications key off this column.
+    finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
 
 class ReflectionLevel(str, PyEnum):
@@ -162,6 +180,38 @@ class TransferLevel(str, PyEnum):
     LACKING = "lacking"
     VAGUE = "vague"
     MEANINGFUL = "meaningful"
+
+
+class NotificationType(str, PyEnum):
+    UNFINISHED_ACTIVITY = "unfinished_activity"
+    NEW_ACTIVITY = "new_activity"
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
+    activity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reflection_activities.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deep_link: Mapped[str] = mapped_column(Text, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+    )
 
 
 class SessionMetric(Base):

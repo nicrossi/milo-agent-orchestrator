@@ -1,7 +1,8 @@
+import logging
 import math
 from typing import List
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import and_, asc, desc, exists, func, or_, select
 
@@ -17,6 +18,10 @@ from src.core.models import (
     SessionMetric,
     User,
 )
+from src.services.email import frontend_base_url, render_button_email, send_email
+from src.services.notifications import notify_new_activity
+
+logger = logging.getLogger("milo-orchestrator.activities")
 from src.schemas.activities import (
     ActivityAssignCoursesRequest,
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
@@ -51,18 +56,93 @@ def _attach_courses(activity, courses_map, response_cls):
         "context_description": activity.context_description,
         "status": activity.status,
         "created_by_id": activity.created_by_id,
+        "deadline": activity.deadline,
         "courses": courses_map.get(activity.id, []),
     }
     if response_cls is ActivityTeacherResponse:
         base["teacher_goal"] = activity.teacher_goal
     return response_cls(**base)
 
+async def _notify_students_of_new_activity(activity_id: UUID) -> None:
+    """Background task: send a "new activity available" email to every student
+    enrolled in any course this activity is assigned to. Runs after the
+    response has been returned. Silently no-ops if email is not configured."""
+    try:
+        async with get_db_session() as db:
+            activity = await db.get(ReflectionActivity, activity_id)
+            if not activity:
+                return
+
+            course_ids_rows = (
+                await db.execute(
+                    select(ActivityCourseAssignment.course_id).where(
+                        ActivityCourseAssignment.activity_id == activity_id
+                    )
+                )
+            ).all()
+            course_ids = [row[0] for row in course_ids_rows]
+            if not course_ids:
+                return  # Activity not scoped to any course → no recipients.
+
+            recipient_rows = (
+                await db.execute(
+                    select(User.id, User.email, User.display_name)
+                    .join(CourseEnrollment, CourseEnrollment.student_id == User.id)
+                    .where(CourseEnrollment.course_id.in_(course_ids))
+                    .distinct()
+                )
+            ).all()
+
+            # Create one in-app notification per enrolled student (idempotent).
+            for user_id, _email, _display_name in recipient_rows:
+                await notify_new_activity(
+                    db,
+                    user_id=user_id,
+                    activity_id=activity.id,
+                    activity_title=activity.title,
+                )
+            await db.commit()
+
+            activity_title = activity.title
+            activity_description = activity.context_description
+
+        if not recipient_rows:
+            return
+
+        link = f"{frontend_base_url()}/?activity={activity_id}"
+        for _user_id, email, display_name in recipient_rows:
+            if not email:
+                continue
+            greeting = f"Hi {display_name}," if display_name else "Hi,"
+            body_html = (
+                f"<p>{greeting}</p>"
+                f"<p>A new activity has been published in one of your courses:</p>"
+                f"<p><strong>{activity_title}</strong></p>"
+                f"<p style='color:#4a6c65;'>{activity_description}</p>"
+                f"<p>Open it whenever you're ready to start your reflection.</p>"
+            )
+            html = render_button_email(
+                headline="New activity available",
+                body_html=body_html,
+                cta_label="Open activity",
+                cta_url=link,
+            )
+            await send_email(
+                to=email,
+                subject=f"New activity: {activity_title}",
+                html=html,
+            )
+    except Exception:
+        logger.exception("Failed to send new-activity emails for activity %s.", activity_id)
+
+
 router = APIRouter(prefix="/activities", tags=["Activities"])
 
 @router.post("", response_model=ActivityTeacherResponse)
 async def create_activity(
     payload: ActivityCreate,
-    user: AuthenticatedUser = Depends(require_teacher)
+    background_tasks: BackgroundTasks,
+    user: AuthenticatedUser = Depends(require_teacher),
 ):
     async with get_db_session() as db:
         if payload.course_ids:
@@ -82,7 +162,8 @@ async def create_activity(
             teacher_goal=payload.teacher_goal,
             context_description=payload.context_description,
             status=payload.status,
-            created_by_id=user.uid
+            created_by_id=user.uid,
+            deadline=payload.deadline,
         )
         db.add(activity)
         await db.flush()
@@ -99,7 +180,13 @@ async def create_activity(
             await db.flush()
 
         courses_map = await _load_courses_for_activities(db, [activity.id])
-        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
+        response = _attach_courses(activity, courses_map, ActivityTeacherResponse)
+
+    # Notify enrolled students after response is sent (only if assigned to courses
+    # and only when published — drafts shouldn't trigger emails).
+    if payload.course_ids and payload.status == ActivityStatus.PUBLISHED:
+        background_tasks.add_task(_notify_students_of_new_activity, activity.id)
+    return response
 
 @router.get("", response_model=List[ActivityStudentResponse])
 async def list_published_activities(

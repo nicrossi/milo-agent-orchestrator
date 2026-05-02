@@ -12,16 +12,23 @@ import asyncio
 from typing import Optional
 from pathlib import Path
 
-from sqlalchemy import select
+from datetime import datetime, timezone
+
+from sqlalchemy import func, select
 
 from src.core.database import get_db_session
 from src.core.models import (
+    ActivityCourseAssignment,
     ChatSession,
+    Course,
+    CourseEnrollment,
     ReflectionActivity,
     SessionMetric,
     SessionStatus,
+    User,
 )
 from src.orchestration.agent import OrchestratorAgent
+from src.services.email import frontend_base_url, render_button_email, send_email
 
 logger = logging.getLogger("milo-orchestrator.metrics_evaluator")
 
@@ -255,12 +262,114 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
 
             session = await db.get(ChatSession, session_id)
             session.status = SessionStatus.EVALUATED
+            activity_id = session.activity_id
             await db.commit()
 
         logger.info("Evaluation complete for session %s", session_id)
+
+        try:
+            await _maybe_notify_teacher_all_completed(activity_id)
+        except Exception:
+            logger.exception(
+                "Failed completion-notification check for activity %s",
+                activity_id,
+            )
 
     except Exception as e:
         logger.error("Evaluation failed for session %s: %s", session_id, e, exc_info=True)
         # We no longer mark EVALUATION_FAILED here; we let the worker handle it during retries
         raise
+
+
+async def _maybe_notify_teacher_all_completed(activity_id) -> None:
+    """If every student enrolled in any course assigned to this activity has at
+    least one EVALUATED session, send the teacher a "everyone has finished"
+    email. Idempotent: writes all_completed_notified_at so the email never
+    fires twice for the same activity."""
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity or activity.all_completed_notified_at is not None:
+            return
+
+        course_ids = [
+            row[0]
+            for row in (
+                await db.execute(
+                    select(ActivityCourseAssignment.course_id).where(
+                        ActivityCourseAssignment.activity_id == activity_id
+                    )
+                )
+            ).all()
+        ]
+        if not course_ids:
+            return  # Unscoped activity — no defined cohort to "complete".
+
+        enrolled_count = (
+            await db.execute(
+                select(func.count(func.distinct(CourseEnrollment.student_id))).where(
+                    CourseEnrollment.course_id.in_(course_ids)
+                )
+            )
+        ).scalar_one()
+        if not enrolled_count:
+            return
+
+        # Cohort completion is keyed off finalized_at, NOT status=EVALUATED.
+        # The LLM is the sole judge of "finished"; the metrics-evaluation
+        # lifecycle (PENDING_EVALUATION → EVALUATED) runs on every
+        # disconnect even for half-done sessions, so it would falsely
+        # trigger this notification.
+        finalized_students_subq = (
+            select(ChatSession.student_id)
+            .where(ChatSession.activity_id == activity_id)
+            .where(ChatSession.finalized_at.is_not(None))
+            .distinct()
+            .subquery()
+        )
+        finalized_in_cohort = (
+            await db.execute(
+                select(func.count(func.distinct(CourseEnrollment.student_id)))
+                .where(CourseEnrollment.course_id.in_(course_ids))
+                .where(CourseEnrollment.student_id.in_(select(finalized_students_subq)))
+            )
+        ).scalar_one()
+
+        if finalized_in_cohort < enrolled_count:
+            return
+
+        teacher = await db.get(User, activity.created_by_id)
+        if not teacher or not teacher.email:
+            logger.warning(
+                "Activity %s has no teacher email; cannot send completion notice.",
+                activity_id,
+            )
+            return
+
+        # Mark BEFORE sending so concurrent evaluations don't double-fire.
+        activity.all_completed_notified_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        teacher_email = teacher.email
+        teacher_name = teacher.display_name or ""
+        title = activity.title
+
+    link = f"{frontend_base_url()}/?activity={activity_id}&view=analytics"
+    greeting = f"Hi {teacher_name}," if teacher_name else "Hi,"
+    body_html = (
+        f"<p>{greeting}</p>"
+        f"<p>Every student enrolled in <strong>{title}</strong> has now completed "
+        f"and been evaluated for this activity.</p>"
+        f"<p>The analytics dashboard has the full breakdown of metrics and per-student results.</p>"
+    )
+    html = render_button_email(
+        headline="All students have completed",
+        body_html=body_html,
+        cta_label="View analytics",
+        cta_url=link,
+    )
+    await send_email(
+        to=teacher_email,
+        subject=f"All students completed: {title}",
+        html=html,
+    )
 

@@ -1,7 +1,7 @@
 from enum import Enum
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
 from src.core.models import (
@@ -28,16 +28,31 @@ class ActivityCreate(BaseModel):
     teacher_goal: str = Field(..., description="Hidden from students, used by AI")
     context_description: str = Field(..., description="The prompt for the student and AI")
     status: ActivityStatus = Field(default=ActivityStatus.PUBLISHED)
+    deadline: datetime = Field(
+        ...,
+        description="Date and time by which students must complete the activity. Must be in the future.",
+    )
     course_ids: Optional[List[UUID]] = Field(
         default=None,
         description="Optional list of course IDs to assign this activity to immediately.",
     )
+
+    @field_validator("deadline")
+    @classmethod
+    def _deadline_must_be_future(cls, value: datetime) -> datetime:
+        # Normalise to timezone-aware UTC so comparison is well-defined.
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        if value <= datetime.now(timezone.utc):
+            raise ValueError("deadline must be in the future")
+        return value
 
 class ActivityUpdate(BaseModel):
     title: Optional[str] = None
     teacher_goal: Optional[str] = None
     context_description: Optional[str] = None
     status: Optional[ActivityStatus] = None
+    deadline: Optional[datetime] = None
 
 
 class ActivityAssignCoursesRequest(BaseModel):
@@ -64,6 +79,7 @@ class ActivityStudentResponse(BaseModel):
     context_description: str
     status: ActivityStatus
     created_by_id: str
+    deadline: Optional[datetime] = None
     courses: List[CourseRef] = Field(default_factory=list)
 
     class Config:
