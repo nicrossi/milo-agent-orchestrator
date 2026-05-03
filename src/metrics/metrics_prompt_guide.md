@@ -72,3 +72,24 @@ Measures how aligned the student's self-perception is with what the student actu
 2.  **Identify "Illusory Understanding":** Penalize responses where the student claims to understand but demonstrates blatant omissions or misconceptions.
 3.  **Detect Bias Reinforcement:** Note if the student uses the reflection merely to confirm their pre-existing prejudices rather than entering a state of productive perplexity.
 4. Do not infer personality traits
+
+### 3. Contextual Transfer (Application & Extrapolation)
+Measures the student's ability to map the structural rules of a core concept onto a novel context. Determine whether the transfer is genuine, superficial, or absent.
+
+#### Classify as `meaningful` when
+- The student accurately applies the concept to a novel or specific situation.
+- Markers: original logical analogies not provided by the AI or teacher, edge-case application or prediction, detailed personal connection that preserves the underlying mechanics of the concept.
+
+#### Classify as `vague` when
+- The connection is generic, superficial, or clichéd.
+- Markers: broad-brush examples without mapping specifics, incomplete logic that fails to explain the mechanics in the new scenario.
+
+#### Classify as `lacking` when
+- The student is unable to apply knowledge externally.
+- Markers: parroting AI/teacher examples, deflection ("I can't think of anything"), illogical applications that break the rules of the concept.
+
+#### Important considerations
+1.  **Reject Parroting:** Examples reused verbatim from the AI, the teacher, or the source material do not count as transfer. Evidence must show student-originated mapping.
+2.  **Check Mechanics, Not Topic:** A novel topic with broken causal logic is still `vague` or `lacking`. The structural rules of the concept must survive the transfer.
+3.  **Edge Cases Beat Restatements:** Predictions, counterexamples, and boundary conditions are stronger evidence of `meaningful` transfer than restated definitions in new wording.
+4.  **No Forced Transfer:** If the interaction never elicited an application attempt, classify based on what the student volunteered. Do not penalize for missing prompts the student was never asked.
