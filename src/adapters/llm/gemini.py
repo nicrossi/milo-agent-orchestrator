@@ -1,10 +1,15 @@
 import asyncio
+import hashlib
 import logging
 import os
+import time
 from typing import AsyncIterator, Dict, List, Optional
 
 import google.genai as genai
 from google.genai import types
+
+_EVAL_CACHE_TTL_SECONDS = 3600
+_EVAL_CACHE_SAFETY_MARGIN_SECONDS = 60
 
 from src.adapters.llm.base import BaseLLMAdapter
 from src.schemas.chat import MessageDTO
@@ -51,6 +56,11 @@ class GeminiAdapter(BaseLLMAdapter):
             max_output_tokens=8192,
             system_instruction=SYSTEM_INSTRUCTION,
         )
+
+        self._eval_cache_name: Optional[str] = None
+        self._eval_cache_key: Optional[str] = None
+        self._eval_cache_expires_at: float = 0.0
+        self._eval_cache_lock = asyncio.Lock()
 
     @staticmethod
     def _to_gemini_history(
@@ -103,19 +113,65 @@ class GeminiAdapter(BaseLLMAdapter):
             )
             raise RuntimeError("Failed to generate response from the LLM") from e
 
-    async def generate_evaluation(self, prompt: str) -> str:
+    async def _get_or_create_eval_cache(self, static_prefix: str) -> str:
+        key = hashlib.sha256(static_prefix.encode("utf-8")).hexdigest()
+        now = time.monotonic()
+        if (
+            self._eval_cache_name
+            and self._eval_cache_key == key
+            and now < self._eval_cache_expires_at
+        ):
+            return self._eval_cache_name
+
+        async with self._eval_cache_lock:
+            if (
+                self._eval_cache_name
+                and self._eval_cache_key == key
+                and time.monotonic() < self._eval_cache_expires_at
+            ):
+                return self._eval_cache_name
+
+            cache = await self.client.aio.caches.create(
+                model=self.model_name,
+                config=types.CreateCachedContentConfig(
+                    contents=[
+                        types.Content(
+                            role="user",
+                            parts=[types.Part(text=static_prefix)],
+                        )
+                    ],
+                    ttl=f"{_EVAL_CACHE_TTL_SECONDS}s",
+                ),
+            )
+            self._eval_cache_name = cache.name
+            self._eval_cache_key = key
+            self._eval_cache_expires_at = (
+                time.monotonic() + _EVAL_CACHE_TTL_SECONDS - _EVAL_CACHE_SAFETY_MARGIN_SECONDS
+            )
+            logger.info(
+                "Created Gemini eval context cache %s (model=%s, ttl=%ds)",
+                cache.name, self.model_name, _EVAL_CACHE_TTL_SECONDS,
+            )
+            return self._eval_cache_name
+
+    async def generate_evaluation(self, static_prefix: str, dynamic_suffix: str) -> str:
         try:
+            cache_name = await self._get_or_create_eval_cache(static_prefix)
             response = await self.client.aio.models.generate_content(
                 model=self.model_name,
-                contents=prompt,
+                contents=dynamic_suffix,
                 config=types.GenerateContentConfig(
                     temperature=0.1,
                     max_output_tokens=8192,
                     response_mime_type="application/json",
+                    cached_content=cache_name,
                 ),
             )
             return response.text
         except Exception as e:
+            self._eval_cache_name = None
+            self._eval_cache_key = None
+            self._eval_cache_expires_at = 0.0
             logger.error(
                 "LLM evaluation failed (model=%s)",
                 self.model_name,

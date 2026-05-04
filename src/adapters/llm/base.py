@@ -28,13 +28,20 @@ class BaseLLMAdapter(ABC):
     @abstractmethod
     async def generate_evaluation(
         self,
-        prompt: str,
+        static_prefix: str,
+        dynamic_suffix: str,
     ) -> str:
         """
-        Generates a structured evaluation based on the given prompt.
+        Generates a structured evaluation, splitting the prompt into a stable
+        cacheable prefix (rubric, framework, few-shot examples, schema) and a
+        per-call dynamic suffix (transcript and activity context).
+
+        Implementations should leverage provider-side context caching on the
+        static prefix to amortize token cost across calls.
 
         Args:
-            prompt: The full evaluation prompt containing context and rubric.
+            static_prefix: Stable portion safe to cache across sessions.
+            dynamic_suffix: Per-session input (transcript, teacher goal, activity).
 
         Returns:
             The generated JSON string response from the LLM.

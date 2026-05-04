@@ -90,9 +90,9 @@ class OrchestratorAgent:
         context_chunks = self._compose_context(rag_chunks, [])
         return self.llm_adapter.generate_answer(query, context_chunks, history)
 
-    async def generate_evaluation(self, prompt: str) -> str:
+    async def generate_evaluation(self, static_prefix: str, dynamic_suffix: str) -> str:
         """Generate evaluation of a session using the underlying LLM adapter."""
-        return await self.llm_adapter.generate_evaluation(prompt)
+        return await self.llm_adapter.generate_evaluation(static_prefix, dynamic_suffix)
 
     async def process_session_stream(
         self,

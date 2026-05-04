@@ -104,26 +104,37 @@ def _build_evaluation_prompt(
     transcript: str,
     teacher_goal: str,
     context_description: str,
-) -> str:
+) -> tuple[str, str]:
+    """Return (static_prefix, dynamic_suffix).
+
+    static_prefix holds rubric, framework, few-shot examples, schema and rules —
+    stable across sessions, safe for provider-side context caching.
+    dynamic_suffix holds per-session input (transcript, teacher goal, activity).
+    """
     prompt_guide = _PROMPT_GUIDE_PATH.read_text()
     output_schema = _OUTPUT_SCHEMA_PATH.read_text()
     examples = _EXAMPLES_PATH.read_text()
     reflective_framework_guide = _REFLECTIVE_FRAMEWORK_GUIDE_PATH.read_text()
 
-    return f"""
-    
+    static_prefix = f"""
 [System Role]
 
-You are an objective Expert Educational Analyst specializing in student metacognition. 
-Your task is to analyze chat transcripts between an AI educational agent and a student, 
-extracting standardized metrics regarding the student's reflective process.    
-    
+You are an objective Expert Educational Analyst specializing in student metacognition.
+Your task is to analyze chat transcripts between an AI educational agent and a student,
+extracting standardized metrics regarding the student's reflective process.
+
 
 [Context & Definitions]
-You must evaluate the student's dialogue based strictly on the following pedagogical frameworks. 
+You must evaluate the student's dialogue based strictly on the following pedagogical frameworks.
 Do not rely on subjective feelings; look for concrete linguistic evidence.
 {reflective_framework_guide}
 {prompt_guide}
+
+[Few-Shot Examples]
+The following ground-truth examples illustrate how transcripts map onto the rubric for every
+combination of reflection_quality / calibration / contextual_transfer. Use them as calibration
+anchors when classifying a new transcript.
+{examples}
 
 [Rules & Constraints]
 - Rely STRICTLY on the provided transcript. Do not infer feelings or thoughts the student did not explicitly state.
@@ -137,15 +148,18 @@ Do not rely on subjective feelings; look for concrete linguistic evidence.
 - short answers can still be good if they are precise and meaningful
 - Language conversation should match user's input
 
+[Expected Output Format]
+{output_schema}
+""".strip()
+
+    dynamic_suffix = f"""
 [Input]
 Student's goal (provided by the teacher, not shown to the student): {teacher_goal}
 Activity description: {context_description}
 Transcript: {transcript}
-
-[Expected Output Format]
-{output_schema}
-
 """.strip()
+
+    return static_prefix, dynamic_suffix
 
 
 def _parse_llm_response(raw: str) -> dict:
@@ -196,14 +210,14 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
                 session.status = SessionStatus.EVALUATED
                 return
 
-            prompt = _build_evaluation_prompt(
+            static_prefix, dynamic_suffix = _build_evaluation_prompt(
                 transcript=transcript,
                 teacher_goal=activity.teacher_goal,
                 context_description=activity.context_description,
             )
 
         # Call LLM outside the DB session to avoid holding the connection
-        raw_response = await agent.generate_evaluation(prompt)
+        raw_response = await agent.generate_evaluation(static_prefix, dynamic_suffix)
         parsed = _parse_llm_response(raw_response)
 
         # Write metrics and update session status
