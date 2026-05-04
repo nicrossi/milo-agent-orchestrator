@@ -25,7 +25,7 @@ logger = logging.getLogger("milo-orchestrator.activities")
 from src.schemas.activities import (
     ActivityAssignCoursesRequest,
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
-    ActivityDashboardResponse, CourseRef, StudentSessionResult,
+    ActivityDashboardResponse, CourseRef, StudentSessionRef, StudentSessionResult,
     ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
     PaginatedStudentResults, ResultsSortBy, SortOrder,
 )
@@ -48,8 +48,36 @@ async def _load_courses_for_activities(db, activity_ids):
     return out
 
 
-def _attach_courses(activity, courses_map, response_cls):
-    """Build a response model from an ORM activity, attaching its courses."""
+async def _load_student_sessions(db, activity_ids, student_id):
+    """Return {activity_id: StudentSessionRef} for the student's most recent
+    session per activity. Activities without a session for this student are
+    absent from the dict so the response renders as "Start reflection".
+    """
+    if not activity_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ChatSession)
+            .where(ChatSession.activity_id.in_(activity_ids))
+            .where(ChatSession.student_id == student_id)
+            .distinct(ChatSession.activity_id)
+            .order_by(ChatSession.activity_id, ChatSession.started_at.desc())
+        )
+    ).scalars().all()
+    return {
+        s.activity_id: StudentSessionRef(
+            id=s.id,
+            status=s.status,
+            started_at=s.started_at,
+            finalized_at=s.finalized_at,
+        )
+        for s in rows
+    }
+
+
+def _attach_courses(activity, courses_map, response_cls, sessions_map=None):
+    """Build a response model from an ORM activity, attaching its courses
+    and (for student responses) the requesting user's session ref."""
     base = {
         "id": activity.id,
         "title": activity.title,
@@ -61,6 +89,8 @@ def _attach_courses(activity, courses_map, response_cls):
     }
     if response_cls is ActivityTeacherResponse:
         base["teacher_goal"] = activity.teacher_goal
+    elif response_cls is ActivityStudentResponse and sessions_map is not None:
+        base["student_session"] = sessions_map.get(activity.id)
     return response_cls(**base)
 
 async def _notify_students_of_new_activity(activity_id: UUID) -> None:
@@ -226,8 +256,13 @@ async def list_published_activities(
         )
         result = await db.execute(stmt)
         activities = result.scalars().all()
-        courses_map = await _load_courses_for_activities(db, [a.id for a in activities])
-        return [_attach_courses(a, courses_map, ActivityStudentResponse) for a in activities]
+        activity_ids = [a.id for a in activities]
+        courses_map = await _load_courses_for_activities(db, activity_ids)
+        sessions_map = await _load_student_sessions(db, activity_ids, user.uid)
+        return [
+            _attach_courses(a, courses_map, ActivityStudentResponse, sessions_map)
+            for a in activities
+        ]
 
 
 @router.post("/{activity_id}/assign-courses", response_model=ActivityTeacherResponse)
@@ -344,6 +379,7 @@ async def get_activity_results(
                 student_name=display_name,
                 status=chat_session.status,
                 started_at=chat_session.started_at,
+                finalized_at=chat_session.finalized_at,
                 reflection_quality=ReflectionMetricResult(
                     level=metric.reflection_quality_level,
                     justification=metric.reflection_quality_justification,

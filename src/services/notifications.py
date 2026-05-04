@@ -92,3 +92,42 @@ async def notify_new_activity(
         body="A new reflection activity is available in one of your courses.",
         deep_link=_activity_deep_link(activity_id),
     )
+
+
+async def notify_deadline_reminder(
+    db: AsyncSession, *, user_id: str, activity_id: UUID, activity_title: str
+) -> None:
+    """Bell counterpart of the 30-min-before-deadline email reminder. Same
+    idempotency guarantee as the rest: at most one unread row per
+    (user, type, activity)."""
+    await create_or_touch_notification(
+        db,
+        user_id=user_id,
+        type=NotificationType.DEADLINE_REMINDER.value,
+        activity_id=activity_id,
+        title=f"Deadline approaching: {activity_title}",
+        body="The activity is due in about 30 minutes — open the chat to finish your reflection.",
+        deep_link=_activity_deep_link(activity_id),
+    )
+
+
+async def notify_deadline_summary(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    activity_id: UUID,
+    activity_title: str,
+    body: str,
+) -> None:
+    """Bell counterpart of the teacher's deadline-summary email. The body
+    is composed by the caller so the notification copy can match the email
+    (e.g. counts of completed-vs-not, metrics-readiness state)."""
+    await create_or_touch_notification(
+        db,
+        user_id=user_id,
+        type=NotificationType.DEADLINE_SUMMARY.value,
+        activity_id=activity_id,
+        title=f"Deadline reached: {activity_title}",
+        body=body,
+        deep_link=f"/?activity={activity_id}&view=analytics",
+    )

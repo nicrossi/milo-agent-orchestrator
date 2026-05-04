@@ -73,6 +73,18 @@ class CourseRef(BaseModel):
         from_attributes = True
 
 
+class StudentSessionRef(BaseModel):
+    """The requesting student's most recent session for an activity, used by
+    the activity card to render Start / Resume / Finished states."""
+    id: UUID
+    status: SessionStatus
+    started_at: datetime
+    finalized_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 class ActivityStudentResponse(BaseModel):
     id: UUID
     title: str
@@ -81,6 +93,9 @@ class ActivityStudentResponse(BaseModel):
     created_by_id: str
     deadline: Optional[datetime] = None
     courses: List[CourseRef] = Field(default_factory=list)
+    # Populated only on the student-facing list endpoint, scoped to the
+    # requesting user. Null when no session exists yet.
+    student_session: Optional[StudentSessionRef] = None
 
     class Config:
         from_attributes = True
@@ -117,6 +132,11 @@ class StudentSessionResult(BaseModel):
     student_name: str  # Joined from users.display_name
     status: SessionStatus
     started_at: datetime
+    # Set when the LLM judges the reflection has reached natural closure.
+    # The teacher analytics view treats this as the source of truth for
+    # "finished" — sessions with finalized_at IS NULL are rendered as
+    # Pending regardless of metrics-pipeline status.
+    finalized_at: Optional[datetime] = None
 
     # AI Metrics (None when the session is still IN_PROGRESS or evaluation failed)
     reflection_quality: Optional[ReflectionMetricResult] = None

@@ -132,7 +132,10 @@ class ReflectionActivity(Base):
     deadline_reminder_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    all_completed_notified_at: Mapped[datetime | None] = mapped_column(
+    # Idempotency marker for the teacher's deadline-summary notification
+    # (sent once when the activity's deadline elapses, replacing the older
+    # "all students completed" trigger).
+    deadline_summary_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -185,6 +188,8 @@ class TransferLevel(str, PyEnum):
 class NotificationType(str, PyEnum):
     UNFINISHED_ACTIVITY = "unfinished_activity"
     NEW_ACTIVITY = "new_activity"
+    DEADLINE_REMINDER = "deadline_reminder"
+    DEADLINE_SUMMARY = "deadline_summary"
 
 
 class Notification(Base):

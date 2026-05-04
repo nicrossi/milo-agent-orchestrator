@@ -98,6 +98,11 @@ class ChatSession:
         # passes). Drives the conversation loop to break after this turn and
         # marks ChatSession.finalized_at.
         self._should_close: bool = False
+        # Flipped to False in _setup_db_session when we resume an existing
+        # session that already has a model greeting on disk. Suppresses the
+        # speculative re-greeting that would otherwise overwrite the resumed
+        # context for the student.
+        self._needs_greeting: bool = True
 
     async def run(self) -> None:
         """Main entry point for the WebSocket handler."""
@@ -111,7 +116,18 @@ class ChatSession:
                 "Session '%s': WebSocket connected for user=%s.",
                 self._session_id, self._user_id
             )
-            await self._process_turn("")
+            if self._needs_greeting:
+                await self._process_turn("")
+            else:
+                # Resuming an existing session — the client speculatively
+                # adds a streaming greeting bubble when it opens the WS.
+                # Tell it to drop that bubble; the prior conversation is
+                # already on screen (loaded from local cache) and we don't
+                # want a fresh greeting layered on top.
+                await self._send_json({
+                    "type": "resumed",
+                    "session_id": self._session_id,
+                })
             await self._conversation_loop()
         except WebSocketDisconnect as exc:
             logger.info("Session '%s': client disconnected (code=%s).", self._session_id, exc.code)
@@ -166,6 +182,31 @@ class ChatSession:
                     await self._ws.close(code=1000, reason="Activity already completed")
                     return False
 
+                # Block entry to expired activities. We only check on WS
+                # open: if the deadline elapses while the student is
+                # already mid-conversation, we let them finish naturally
+                # (cutting the socket would destroy their reflection
+                # context). The teacher's deadline-summary worker treats
+                # `finalized_at <= deadline` as the "completed on time"
+                # criterion, so late finalizations are still recorded but
+                # don't count toward the on-time cohort.
+                activity_for_deadline = await db.get(ReflectionActivity, activity_uuid)
+                if (
+                    activity_for_deadline is not None
+                    and activity_for_deadline.deadline is not None
+                    and activity_for_deadline.deadline < datetime.now(timezone.utc)
+                ):
+                    logger.info(
+                        "Activity=%s expired (deadline=%s); refusing entry for user=%s.",
+                        activity_uuid, activity_for_deadline.deadline, self._user_id,
+                    )
+                    await self._send_json({
+                        "type": "expired",
+                        "deadline": activity_for_deadline.deadline.isoformat(),
+                    })
+                    await self._ws.close(code=1000, reason="Activity deadline elapsed")
+                    return False
+
                 # Resume the most recent non-finalized session for this
                 # (user, activity), regardless of age. The LLM is the sole
                 # judge of "done" via finalized_at — if it never fired, the
@@ -186,10 +227,27 @@ class ChatSession:
                     db_session = existing
                     db_session.status = SessionStatus.IN_PROGRESS  # reset lifecycle
                     await db.commit()
+
+                    # Suppress the speculative greeting if the prior session
+                    # already produced model output. Otherwise the LLM would
+                    # generate a brand-new greeting using the existing
+                    # transcript as context, and the student perceives it as
+                    # "Milo started over from scratch".
+                    has_model_history = (
+                        await db.execute(
+                            select(ChatMessage.id)
+                            .where(ChatMessage.session_id == existing.id)
+                            .where(ChatMessage.role == "model")
+                            .limit(1)
+                        )
+                    ).first() is not None
+                    self._needs_greeting = not has_model_history
+
                     logger.info(
                         "Session '%s': resuming prior session for user=%s activity=%s "
-                        "(prior status=%s).",
-                        existing.id, self._user_id, activity_uuid, existing.status,
+                        "(prior status=%s, needs_greeting=%s).",
+                        existing.id, self._user_id, activity_uuid,
+                        existing.status, self._needs_greeting,
                     )
                 else:
                     db_session = ChatSessionModel(
@@ -234,29 +292,39 @@ class ChatSession:
             return
 
         try:
+            should_evaluate = False
             async with get_db_session() as db:
                 session = await db.get(ChatSessionModel, self._session_id_uuid)
-                if session is not None:
-                    session.status = SessionStatus.PENDING_EVALUATION
-                    # Phase 5: snapshot the final policy_state for resumption
-                    # (brief window before LLM evaluator marks EVALUATED).
-                    session.policy_state = PolicyStateSnapshot.from_session(self).serialize()
-                    await db.commit()
+                if session is None:
+                    return
 
-                # Phase 5: write per-session policy metrics to SessionMetric.
-                metric_row = await db.get(SessionMetric, self._session_id_uuid)
-                if metric_row is None:
-                    metric_row = SessionMetric(session_id=self._session_id_uuid)
-                    db.add(metric_row)
-                metric_row.policy_metrics = self._metrics.snapshot()
+                # Always snapshot policy_state so a future resume rehydrates
+                # cross-turn state (hint ladder, recovery, etc.).
+                session.policy_state = PolicyStateSnapshot.from_session(self).serialize()
+
+                # Evaluation only fires for LLM-finalized sessions. An
+                # unfinalized session — whether greeting-only or full of
+                # back-and-forth that never reached natural closure — is
+                # still "in progress" from the student's POV and from the
+                # teacher's analytics POV. Status stays IN_PROGRESS until
+                # the LLM emits the closure sentinel.
+                should_evaluate = session.finalized_at is not None
+                if should_evaluate:
+                    session.status = SessionStatus.PENDING_EVALUATION
                 await db.commit()
 
-                # If the LLM never marked this session finalized AND the
-                # student actually engaged (≥ 1 user message), drop an
-                # in-app "unfinished activity" notification so the bell
-                # surfaces a resume-link on the home page.
-                if session is not None and session.finalized_at is None:
-                    user_msg_count = (
+                if should_evaluate:
+                    metric_row = await db.get(SessionMetric, self._session_id_uuid)
+                    if metric_row is None:
+                        metric_row = SessionMetric(session_id=self._session_id_uuid)
+                        db.add(metric_row)
+                    metric_row.policy_metrics = self._metrics.snapshot()
+                    await db.commit()
+
+                # Drop an "unfinished activity" notification only if the
+                # student actually engaged AND the LLM never closed.
+                if session.finalized_at is None:
+                    user_msg = (
                         await db.execute(
                             select(ChatMessage.id)
                             .where(ChatMessage.session_id == self._session_id_uuid)
@@ -264,7 +332,7 @@ class ChatSession:
                             .limit(1)
                         )
                     ).first()
-                    if user_msg_count is not None:
+                    if user_msg is not None:
                         activity = await db.get(ReflectionActivity, session.activity_id)
                         if activity is not None:
                             await notify_unfinished_activity(
@@ -274,6 +342,9 @@ class ChatSession:
                                 activity_title=activity.title,
                             )
                             await db.commit()
+
+            if not should_evaluate:
+                return
 
             if not _AUTO_EVALUATE_ON_CHAT_CLOSE:
                 logger.info(
@@ -443,45 +514,66 @@ class ChatSession:
                     self._session_id, exc, exc_info=True,
                 )
 
-            # Step 3: stream with directives injected.
-            # We hold back enough trailing characters to safely detect and
-            # strip the closure sentinel before flushing the final chunk to
-            # the client. This guarantees the student never sees the token.
+            # Step 3: stream the LLM response.
+            # Closure-eligible turns are buffered fully so we can suppress
+            # the entire closing message if the sentinel appears — the
+            # LLM's closing text has historically been unreliable (it
+            # sometimes emits a Socratic question alongside the sentinel)
+            # and the UI shows a deterministic "activity finished"
+            # announcement instead. Non-eligible turns stream live with a
+            # small tail buffer so a stray sentinel can be stripped from
+            # the final chunk.
+            closure_eligible = decision is not None and decision.closure_eligible
             accumulated: List[str] = []
-            tail_buffer = ""
-            tail_size = len(CLOSURE_SENTINEL) + 8  # slack for whitespace/newlines
+            sentinel_detected = False
+
             async with get_db_session() as db:
                 stream = self._agent.process_session_stream(
                     db, self._user_id, self._session_id, user_text,
                     self._context_description, self._activity_id,
                     prompt_directives=prompt_directives,
                 )
-                async for chunk in stream:
-                    tail_buffer += chunk
-                    if len(tail_buffer) > tail_size:
-                        head = tail_buffer[:-tail_size]
-                        tail_buffer = tail_buffer[-tail_size:]
-                        accumulated.append(head)
-                        if not await self._send_json({"type": "chunk", "text": head}):
+
+                if closure_eligible:
+                    async for chunk in stream:
+                        accumulated.append(chunk)
+                    full_text = "".join(accumulated)
+                    sentinel_detected = CLOSURE_SENTINEL in full_text
+                    if not sentinel_detected:
+                        if not await self._send_json({"type": "chunk", "text": full_text}):
                             logger.info(
                                 "Session '%s': client dropped mid-stream - halting.",
                                 self._session_id,
                             )
                             return
-
-            # End of stream — flush the held-back tail, stripping the sentinel
-            # if the LLM emitted it.
-            sentinel_detected = CLOSURE_SENTINEL in tail_buffer
-            if sentinel_detected:
-                tail_buffer = tail_buffer.replace(CLOSURE_SENTINEL, "").rstrip()
-            if tail_buffer:
-                accumulated.append(tail_buffer)
-                if not await self._send_json({"type": "chunk", "text": tail_buffer}):
-                    logger.info(
-                        "Session '%s': client dropped mid-stream - halting.",
-                        self._session_id,
-                    )
-                    return
+                    # When sentinel_detected, deliberately send NO chunks —
+                    # the session_complete frame drives the UI.
+                else:
+                    tail_buffer = ""
+                    tail_size = len(CLOSURE_SENTINEL) + 8  # slack for whitespace/newlines
+                    async for chunk in stream:
+                        tail_buffer += chunk
+                        if len(tail_buffer) > tail_size:
+                            head = tail_buffer[:-tail_size]
+                            tail_buffer = tail_buffer[-tail_size:]
+                            accumulated.append(head)
+                            if not await self._send_json({"type": "chunk", "text": head}):
+                                logger.info(
+                                    "Session '%s': client dropped mid-stream - halting.",
+                                    self._session_id,
+                                )
+                                return
+                    sentinel_detected = CLOSURE_SENTINEL in tail_buffer
+                    if sentinel_detected:
+                        tail_buffer = tail_buffer.replace(CLOSURE_SENTINEL, "").rstrip()
+                    if tail_buffer:
+                        accumulated.append(tail_buffer)
+                        if not await self._send_json({"type": "chunk", "text": tail_buffer}):
+                            logger.info(
+                                "Session '%s': client dropped mid-stream - halting.",
+                                self._session_id,
+                            )
+                            return
 
             # Step 4: output interception.
             # Skip the interceptors when the LLM emitted the closure sentinel —
@@ -548,10 +640,7 @@ class ChatSession:
                                 )
                                 if session_row is not None and session_row.finalized_at is None:
                                     session_row.finalized_at = datetime.now(timezone.utc)
-                                # The agent persists chat_messages chunk-by-chunk
-                                # raw, so the latest model row still contains the
-                                # sentinel even though the student never saw it.
-                                # Strip it from the DB so transcripts read clean.
+
                                 latest_msg = (
                                     await db.execute(
                                         select(ChatMessage)
@@ -561,10 +650,20 @@ class ChatSession:
                                         .limit(1)
                                     )
                                 ).scalar_one_or_none()
-                                if latest_msg and CLOSURE_SENTINEL in latest_msg.content:
-                                    latest_msg.content = (
-                                        latest_msg.content.replace(CLOSURE_SENTINEL, "").rstrip()
-                                    )
+
+                                if latest_msg is not None:
+                                    if closure_eligible:
+                                        # The closing turn was suppressed
+                                        # from the client; drop the row
+                                        # from the transcript too so
+                                        # reviewers don't see the LLM's
+                                        # (occasionally noisy) closure
+                                        # text.
+                                        await db.delete(latest_msg)
+                                    elif CLOSURE_SENTINEL in latest_msg.content:
+                                        latest_msg.content = (
+                                            latest_msg.content.replace(CLOSURE_SENTINEL, "").rstrip()
+                                        )
                                 await db.commit()
                         except Exception:
                             logger.exception(

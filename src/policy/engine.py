@@ -177,11 +177,12 @@ class PolicyEngine:
         # actually reflect (>= CLOSURE_MIN_TURNS) and the FSM is past PLANNING.
         # Recovery (STABILIZE) and PLANNING explicitly exclude — wrapping up
         # a confused or barely-started reflection would be premature.
-        if (
+        closure_eligible = (
             ctx.turn_count >= CLOSURE_MIN_TURNS
             and next_state in (FSMState.MONITORING, FSMState.EVALUATION)
             and next_recovery == RecoveryState.NORMAL
-        ):
+        )
+        if closure_eligible:
             plan.prompt_directives.append(_CLOSURE_DIRECTIVE)
 
         return PolicyDecision(
@@ -196,6 +197,7 @@ class PolicyEngine:
             next_recovery_state=next_recovery,
             next_turns_in_recovery=next_turns_in_rec,
             next_turns_since_meta_feedback=cooldown.compute_next(any_non_essential_fired),
+            closure_eligible=closure_eligible,
         )
 
     def check_output(self, raw: str, decision: PolicyDecision) -> tuple[bool, str]:
