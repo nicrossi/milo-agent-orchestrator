@@ -18,7 +18,8 @@ from sqlalchemy import select, text
 
 from src.core.auth import _ensure_firebase_app
 from src.core.database import get_db_session
-from src.core.models import Course, CourseEnrollment, User
+from src.core.models import ChatSession, Course, CourseEnrollment, SessionStatus, User
+from src.orchestration.agent import get_agent
 from src.schemas.admin import (
     AdminCourseCreate,
     AdminCourseResponse,
@@ -27,6 +28,7 @@ from src.schemas.admin import (
     AdminUserCreate,
     AdminUserResponse,
 )
+from src.services.metrics_evaluator import queue_evaluation
 
 logger = logging.getLogger("milo-orchestrator.admin")
 
@@ -206,6 +208,35 @@ async def unenroll_student(course_id: UUID, student_id: str):
             {"cid": str(course_id), "sid": student_id},
         )
         return await _build_course_response(db, course)
+
+
+@router.post("/sessions/{session_id}/re-evaluate", status_code=202)
+async def re_evaluate_session(session_id: UUID):
+    """Re-queue a chat session for metrics evaluation.
+
+    Useful after a transient Gemini outage left a session in
+    EVALUATION_FAILED. Resets the row to PENDING_EVALUATION and pushes it
+    onto the evaluator's in-memory queue. Always allowed — the worker's
+    own retry+backoff handles transient failures.
+    """
+    agent = get_agent()
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Evaluation agent is not available.")
+
+    async with get_db_session() as db:
+        session = await db.get(ChatSession, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        if session.finalized_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Session was not LLM-finalized; nothing to evaluate.",
+            )
+        session.status = SessionStatus.PENDING_EVALUATION
+        await db.commit()
+
+    await queue_evaluation(session_id, agent)
+    return {"ok": True, "session_id": str(session_id)}
 
 
 @router.put("/courses/{course_id}/teacher", response_model=AdminCourseResponse)
