@@ -143,3 +143,9 @@ class PolicyDecision(BaseModel):
     next_recovery_state: RecoveryState = RecoveryState.NORMAL
     next_turns_in_recovery: int = 0
     next_turns_since_meta_feedback: int = 99
+    # True when this turn's prompt includes the closure directive — i.e.
+    # the engine considers it acceptable for the LLM to emit the closure
+    # sentinel. The session layer uses this to buffer the entire stream
+    # (so it can suppress the LLM's closing turn entirely if the sentinel
+    # appears) instead of streaming chunks live.
+    closure_eligible: bool = False

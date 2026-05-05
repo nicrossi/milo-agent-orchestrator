@@ -36,11 +36,40 @@ from src.policy.rules.no_direct_answers import NoDirectAnswersRule
 from src.policy.rules.tone_by_confidence import ToneByConfidenceRule
 from src.policy.scores import compute_scores
 from src.policy.types import (
+    FSMState,
     PolicyContext,
     PolicyDecision,
     QuestionPlan,
     RecoveryState,
     ResponseConstraints,
+)
+
+# Token the LLM emits at the very end of its response when it judges the
+# reflection has reached natural closure. session.py parses + strips it from
+# the streamed output and finalizes the chat session in DB.
+CLOSURE_SENTINEL = "[[END_REFLECTION]]"
+
+# Earliest turn at which closure is allowed. Below this, even if the LLM emits
+# the sentinel, session.py will ignore it (logged warning). Prevents accidental
+# closures of conversations that barely started.
+CLOSURE_MIN_TURNS = 4
+
+_CLOSURE_DIRECTIVE = (
+    "Closure protocol. ONLY when the student has clearly reached a natural "
+    "endpoint of their reflection (they articulated a takeaway, named a "
+    "concrete next step, or otherwise signaled they are done), produce a "
+    "closing turn instead of another Socratic question. The closing turn "
+    "must contain ALL of:\n"
+    "  1. A short, warm acknowledgement of what they reflected on (1 sentence).\n"
+    "  2. An explicit statement that the activity is now complete — phrasing "
+    "like 'Your reflection on this activity is complete' or 'You can finish "
+    "this activity here'. Match the language the student has been using.\n"
+    "  3. The literal token "
+    f"{CLOSURE_SENTINEL} on its OWN final line, with no other text after it.\n"
+    "Do NOT ask any question in a closing turn. Do NOT emit the token in any "
+    "other situation, do not mention it to the student, and do not emit it "
+    "after a single short message. When in doubt, do not close: continue the "
+    "Socratic dialogue as planned."
 )
 
 # Module-level singletons — stateless, safe to share across all sessions.
@@ -143,6 +172,19 @@ class PolicyEngine:
                 if not rule.essential:
                     any_non_essential_fired = True
 
+        # Closure eligibility — let the LLM decide when reflection is done.
+        # Inject the sentinel directive only after the student has had time to
+        # actually reflect (>= CLOSURE_MIN_TURNS) and the FSM is past PLANNING.
+        # Recovery (STABILIZE) and PLANNING explicitly exclude — wrapping up
+        # a confused or barely-started reflection would be premature.
+        closure_eligible = (
+            ctx.turn_count >= CLOSURE_MIN_TURNS
+            and next_state in (FSMState.MONITORING, FSMState.EVALUATION)
+            and next_recovery == RecoveryState.NORMAL
+        )
+        if closure_eligible:
+            plan.prompt_directives.append(_CLOSURE_DIRECTIVE)
+
         return PolicyDecision(
             next_state=next_state,
             plan=plan,
@@ -155,6 +197,7 @@ class PolicyEngine:
             next_recovery_state=next_recovery,
             next_turns_in_recovery=next_turns_in_rec,
             next_turns_since_meta_feedback=cooldown.compute_next(any_non_essential_fired),
+            closure_eligible=closure_eligible,
         )
 
     def check_output(self, raw: str, decision: PolicyDecision) -> tuple[bool, str]:

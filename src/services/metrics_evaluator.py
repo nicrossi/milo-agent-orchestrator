@@ -12,10 +12,11 @@ import asyncio
 from typing import Optional
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.core.database import get_db_session
 from src.core.models import (
+    ChatMessage,
     ChatSession,
     ReflectionActivity,
     SessionMetric,
@@ -59,28 +60,35 @@ async def _evaluation_worker() -> None:
         try:
             session_id, agent = await _evaluation_queue.get()
             logger.info("Dequeued evaluation for session %s (Queue size: %d)", session_id, _evaluation_queue.qsize())
-            
-            retries = [5, 10, 20]
+
+            # Backoff schedule for transient LLM failures (Gemini 503/overload,
+            # network blips, etc). Total budget ~6 minutes, which absorbs most
+            # short outages without giving up. The previous schedule
+            # ([5, 10, 20]) was too tight — one Gemini "high demand" window
+            # routinely exceeds 35s and produced false EVALUATION_FAILED rows.
+            retries = [10, 30, 90, 240]
             max_attempts = len(retries) + 1
-            
+
             for attempt in range(1, max_attempts + 1):
                 try:
                     await evaluate_session(session_id, agent)
                     break
                 except Exception as e:
                     e_str = str(e)
-                    if "400" in e_str or "500" in e_str:
-                        logger.error("Critical error (400/500) for session %s, failing immediately: %s", session_id, e_str)
-                        await _mark_session_failed(session_id)
-                        break
-                    
                     if attempt < max_attempts:
                         wait_time = retries[attempt - 1]
-                        logger.warning("Evaluation failed for session %s (Attempt %d/%d), retrying in %ds... Error: %s", 
-                                       session_id, attempt, max_attempts, wait_time, e_str)
+                        logger.warning(
+                            "Evaluation failed for session %s (attempt %d/%d), "
+                            "retrying in %ds. Error: %s",
+                            session_id, attempt, max_attempts, wait_time, e_str,
+                        )
                         await asyncio.sleep(wait_time)
                     else:
-                        logger.error("All retries failed for session %s", session_id)
+                        logger.error(
+                            "All %d evaluation attempts failed for session %s. "
+                            "Final error: %s",
+                            max_attempts, session_id, e_str,
+                        )
                         await _mark_session_failed(session_id)
 
             _evaluation_queue.task_done()
@@ -191,6 +199,26 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             if not activity:
                 raise ValueError(f"Activity {session.activity_id} not found")
 
+            # Defensive: zero-engagement sessions should never have been
+            # queued (session.py:_wrap_up_session keeps them IN_PROGRESS).
+            # If one slips through, refuse to mark it EVALUATED — that
+            # would surface an empty session as "completed" in the teacher
+            # analytics view.
+            user_msg_count = (
+                await db.execute(
+                    select(func.count(ChatMessage.id))
+                    .where(ChatMessage.session_id == session_id)
+                    .where(ChatMessage.role == "user")
+                )
+            ).scalar_one()
+            if user_msg_count == 0:
+                logger.warning(
+                    "Session %s queued for evaluation with zero user messages — "
+                    "skipping without state change.",
+                    session_id,
+                )
+                return
+
             stmt = (
                 select(ChatSession.transcript)
                 .where(
@@ -202,12 +230,13 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             )
             result = await db.execute(stmt)
             transcripts = result.scalars().all()
-            
+
             transcript = "\n\n".join(transcripts).strip()
-            
+
             if not transcript:
                 logger.info("Empty cumulative transcript for session %s. Skipping LLM evaluation.", session_id)
                 session.status = SessionStatus.EVALUATED
+                await db.commit()
                 return
 
             static_prefix, dynamic_suffix = _build_evaluation_prompt(
