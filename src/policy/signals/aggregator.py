@@ -23,6 +23,7 @@ from src.policy.signals.extractors import (
     extract_hedging,
     extract_latency_z,
     extract_message_length_z,
+    extract_procedural_request,
     extract_revision_markers,
 )
 from src.policy.types import UserSignals
@@ -74,6 +75,7 @@ def build_user_signals(
         confusion=extract_confusion_keywords(user_message),
         attempt_present=extract_attempt_presence(user_message),
         direct_answer_request=extract_direct_answer_request(user_message),
+        procedural_request=extract_procedural_request(user_message),
         latency_z=extract_latency_z(latency, latency_w),
         length_z=extract_message_length_z(user_message, length_w),
         revisions=extract_revision_markers(user_message),

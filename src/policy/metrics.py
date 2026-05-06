@@ -16,6 +16,11 @@ Tracked metrics:
   - rule_firing_counts: per-rule firing counts for traceability.
   - calibration_gap_proxy: fraction of turns with high miscalibration score.
   - recovery_entries: count of NORMAL → STABILIZE transitions.
+  - procedural_unblocks: count of turns where ProceduralUnblockRule fired.
+  - pre_unblock_stuckness_run_max: longest run of procedural_request=True
+    turns observed BEFORE the rule fired (or before session end if it
+    never fired). Calibration target ≤ 2; large values mean the threshold
+    or cooldown is too conservative.
 """
 from __future__ import annotations
 
@@ -37,6 +42,10 @@ class MetricsCollector:
         self.miscalibration_high_turns = 0
         self.recovery_entries = 0
         self._prev_recovery_state: RecoveryState = RecoveryState.NORMAL
+        # Procedural-roadblock instrumentation.
+        self.procedural_unblocks = 0
+        self.pre_unblock_stuckness_run_max = 0
+        self._current_stuckness_run = 0
 
     # ---- per-turn instrumentation ----
 
@@ -52,6 +61,27 @@ class MetricsCollector:
 
         if decision.scores and decision.scores.miscalibration > 0.5:
             self.miscalibration_high_turns += 1
+
+        # Procedural-roadblock tracking.
+        block_score = (
+            decision.scores.procedural_block if decision.scores else 0.0
+        )
+        if "procedural_unblock" in decision.applied_rules:
+            self.procedural_unblocks += 1
+            # Capture run length up to (and including) the firing turn, then reset.
+            self.pre_unblock_stuckness_run_max = max(
+                self.pre_unblock_stuckness_run_max,
+                self._current_stuckness_run + 1,
+            )
+            self._current_stuckness_run = 0
+        elif block_score > 0.0:
+            self._current_stuckness_run += 1
+            self.pre_unblock_stuckness_run_max = max(
+                self.pre_unblock_stuckness_run_max,
+                self._current_stuckness_run,
+            )
+        else:
+            self._current_stuckness_run = 0
 
         # Count NORMAL → STABILIZE transitions.
         if (
@@ -78,4 +108,6 @@ class MetricsCollector:
             "rule_firing_counts": dict(self.rule_firing_counts),
             "calibration_gap_proxy": self.miscalibration_high_turns / denom,
             "recovery_entries": self.recovery_entries,
+            "procedural_unblocks": self.procedural_unblocks,
+            "pre_unblock_stuckness_run_max": self.pre_unblock_stuckness_run_max,
         }

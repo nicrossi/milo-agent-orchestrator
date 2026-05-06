@@ -45,6 +45,7 @@ class _SessionRunner:
         self.recovery_state = RecoveryState.NORMAL
         self.turns_in_recovery = 0
         self.turns_since_meta_feedback = 99
+        self.turns_since_procedural_unblock = 99
         self.activity = activity
         self.history: list[dict] = []  # decisions per turn for assertions
         self.now_ts = 1000.0
@@ -74,6 +75,7 @@ class _SessionRunner:
             recovery_state=self.recovery_state,
             turns_in_recovery=self.turns_in_recovery,
             turns_since_meta_feedback=self.turns_since_meta_feedback,
+            turns_since_procedural_unblock=self.turns_since_procedural_unblock,
         )
         decision = _engine.evaluate(ctx)
         was_intercepted, final_text = _engine.check_output(llm_output, decision)
@@ -95,6 +97,7 @@ class _SessionRunner:
         self.recovery_state = decision.next_recovery_state
         self.turns_in_recovery = decision.next_turns_in_recovery
         self.turns_since_meta_feedback = decision.next_turns_since_meta_feedback
+        self.turns_since_procedural_unblock = decision.next_turns_since_procedural_unblock
         self.last_milo_response_ts = self.now_ts + 5.0  # simulate 5s of LLM streaming
         self.now_ts = self.last_milo_response_ts + 1.0  # next user msg arrives 1s later
         self.turn_count += 1

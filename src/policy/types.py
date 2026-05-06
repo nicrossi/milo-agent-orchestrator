@@ -1,5 +1,5 @@
 import enum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -50,6 +50,10 @@ class UserSignals(BaseModel):
     confusion: float = Field(default=0.0, ge=0.0, le=1.0)
     attempt_present: bool = True
     direct_answer_request: bool = False
+    # True when message explicitly signals a missing low-level prerequisite
+    # (formula, definition). Distinct from confusion (concept-level) and
+    # hedging (epistemic uncertainty).
+    procedural_request: bool = False
     latency_z: float = 0.0
     length_z: float = 0.0
     revisions: int = Field(default=0, ge=0)
@@ -72,6 +76,10 @@ class Scores(BaseModel):
     hint_abuse: float = Field(default=0.0, ge=0.0, le=1.0)
     help_avoidance: float = Field(default=0.0, ge=0.0, le=1.0)
     affect_load: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Procedural-prerequisite roadblock: high when student has shown earlier
+    # attempt + repeatedly signals a missing low-level fact. Drives the
+    # ProceduralUnblockRule (Scaffolding Pivot).
+    procedural_block: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ActivityRef(BaseModel):
@@ -109,6 +117,9 @@ class PolicyContext(BaseModel):
     turns_in_recovery: int = 0
     # High default = first turn never suppressed by cooldown.
     turns_since_meta_feedback: int = 99
+    # Cooldown counter for ProceduralUnblockRule. High default lets the rule
+    # fire as soon as conditions are first met.
+    turns_since_procedural_unblock: int = 99
 
 
 class ResponseConstraints(BaseModel):
@@ -127,6 +138,32 @@ class QuestionPlan(BaseModel):
     prompt_directives: list[str] = Field(default_factory=list)
 
 
+class StageTrace(BaseModel):
+    """Per-stage record produced during PolicyEngine.evaluate() when tracing.
+
+    Names map 1:1 to the engine's pipeline steps: scores, recovery, fsm,
+    hint_ladder, question_selection, rules.
+    """
+    name: str
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    transition_reason: str = ""
+
+
+class PolicyTrace(BaseModel):
+    """Self-contained per-turn execution trace, for the debug visualizer.
+
+    Carries enough context to render the stage timeline without correlating
+    across messages. Heavy-weight relative to PolicyDecision but only built
+    when the caller opts in.
+    """
+    context_inputs: dict[str, Any] = Field(default_factory=dict)
+    user_signals: Optional[UserSignals] = None
+    scores: Optional[Scores] = None
+    stages: list[StageTrace] = Field(default_factory=list)
+    closure_eligibility: dict[str, Any] = Field(default_factory=dict)
+
+
 class PolicyDecision(BaseModel):
     next_state: FSMState
     plan: QuestionPlan
@@ -143,9 +180,14 @@ class PolicyDecision(BaseModel):
     next_recovery_state: RecoveryState = RecoveryState.NORMAL
     next_turns_in_recovery: int = 0
     next_turns_since_meta_feedback: int = 99
+    next_turns_since_procedural_unblock: int = 99
     # True when this turn's prompt includes the closure directive — i.e.
     # the engine considers it acceptable for the LLM to emit the closure
     # sentinel. The session layer uses this to buffer the entire stream
     # (so it can suppress the LLM's closing turn entirely if the sentinel
     # appears) instead of streaming chunks live.
     closure_eligible: bool = False
+    # Optional per-turn execution trace populated when the caller passes
+    # collect_trace=True to PolicyEngine.evaluate(). Off by default to keep
+    # production payloads small.
+    debug_trace: Optional[PolicyTrace] = None

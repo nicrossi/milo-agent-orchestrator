@@ -52,6 +52,10 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 _AUTO_EVALUATE_ON_CHAT_CLOSE = _env_flag("AUTO_EVALUATE_ON_CHAT_CLOSE", default=True)
+# Dev-only flag: when on, the engine builds a per-turn execution trace and the
+# session emits a `policy_debug` WebSocket frame before the `done` frame so a
+# debug panel in the client can visualize policy decisions in near-realtime.
+_POLICY_DEBUG_ENABLED = _env_flag("POLICY_DEBUG_ENABLED", default=False)
 
 
 class ChatSession:
@@ -92,6 +96,8 @@ class ChatSession:
         self._recovery_state: RecoveryState = RecoveryState.NORMAL
         self._turns_in_recovery: int = 0
         self._turns_since_meta_feedback: int = 99
+        # Cooldown for ProceduralUnblockRule (Scaffolding Pivot).
+        self._turns_since_procedural_unblock: int = 99
         # Phase 5: per-session policy metrics collector.
         self._metrics = MetricsCollector()
         # Set when the LLM emits CLOSURE_SENTINEL (and the turn-count guardrail
@@ -483,8 +489,9 @@ class ChatSession:
                     recovery_state=self._recovery_state,
                     turns_in_recovery=self._turns_in_recovery,
                     turns_since_meta_feedback=self._turns_since_meta_feedback,
+                    turns_since_procedural_unblock=self._turns_since_procedural_unblock,
                 )
-                decision = _policy_engine.evaluate(ctx)
+                decision = _policy_engine.evaluate(ctx, collect_trace=_POLICY_DEBUG_ENABLED)
                 prompt_directives = decision.plan.prompt_directives
 
                 # Append to rolling windows AFTER evaluate (so this turn's signals
@@ -528,10 +535,14 @@ class ChatSession:
             sentinel_detected = False
 
             async with get_db_session() as db:
+                teacher_goal = (
+                    self._activity_ref.teacher_goal if self._activity_ref else None
+                )
                 stream = self._agent.process_session_stream(
                     db, self._user_id, self._session_id, user_text,
                     self._context_description, self._activity_id,
                     prompt_directives=prompt_directives,
+                    teacher_goal=teacher_goal,
                 )
 
                 if closure_eligible:
@@ -584,12 +595,13 @@ class ChatSession:
             # `done` frame still run normally below.
             if decision is not None:
                 was_intercepted = False
+                interceptor_correction = ""
                 if not sentinel_detected:
                     full_response = "".join(accumulated)
                     was_intercepted, final_text = _policy_engine.check_output(full_response, decision)
                     if was_intercepted:
-                        correction = final_text[len(full_response):]
-                        await self._send_json({"type": "chunk", "text": correction})
+                        interceptor_correction = final_text[len(full_response):]
+                        await self._send_json({"type": "chunk", "text": interceptor_correction})
                         logger.info(
                             "Session '%s': interceptor fired — correction appended.", self._session_id
                         )
@@ -605,11 +617,27 @@ class ChatSession:
                 self._recovery_state = decision.next_recovery_state
                 self._turns_in_recovery = decision.next_turns_in_recovery
                 self._turns_since_meta_feedback = decision.next_turns_since_meta_feedback
+                self._turns_since_procedural_unblock = decision.next_turns_since_procedural_unblock
                 # Phase 5: capture per-turn metrics + interceptor outcome.
                 self._metrics.record_decision(decision)
                 self._metrics.record_interceptor_correction(was_intercepted)
                 # Phase 5: persist policy_state snapshot for resumption.
                 await self._persist_policy_state()
+
+                # Optional: emit a rich debug frame BEFORE `done` so dev clients
+                # can render the per-turn policy trace (scores, stage transitions,
+                # rules, interceptors). Gated by POLICY_DEBUG_ENABLED.
+                if _POLICY_DEBUG_ENABLED and decision.debug_trace is not None:
+                    await self._send_json({
+                        "type": "policy_debug",
+                        "turn": turn_count,
+                        "trace": decision.debug_trace.model_dump(),
+                        "interceptor": {
+                            "fired": was_intercepted,
+                            "correction": interceptor_correction,
+                            "sentinel_detected": sentinel_detected,
+                        },
+                    })
 
                 # Step 6: done with policy metadata
                 await self._send_json({

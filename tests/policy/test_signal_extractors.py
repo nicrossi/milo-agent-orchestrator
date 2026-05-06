@@ -6,8 +6,49 @@ from src.policy.signals.extractors import (
     extract_hedging,
     extract_latency_z,
     extract_message_length_z,
+    extract_procedural_request,
     extract_revision_markers,
 )
+
+
+# --- procedural_request ---
+
+def test_procedural_request_zero_on_neutral():
+    assert extract_procedural_request("la respuesta es 42") is False
+
+
+def test_procedural_request_detects_spanish_no_recuerdo():
+    assert extract_procedural_request("no recuerdo cómo se calcula") is True
+
+
+def test_procedural_request_detects_spanish_dame_la_formula():
+    assert extract_procedural_request("dame la formula") is True
+
+
+def test_procedural_request_detects_english_dont_remember():
+    assert extract_procedural_request("I don't remember the formula") is True
+
+
+def test_procedural_request_detects_english_what_is_the_formula():
+    assert extract_procedural_request("Could you give me the formula?") is True
+
+
+def test_procedural_request_detects_english_dont_know_how_to():
+    assert extract_procedural_request("I don't know how to calculate the area") is True
+
+
+def test_procedural_request_does_not_match_confusion_phrasing():
+    # "I don't understand" is concept-level confusion, not a procedural-fact request.
+    assert extract_procedural_request("I don't understand the problem") is False
+
+
+def test_procedural_request_does_not_match_generic_hedging():
+    assert extract_procedural_request("I think the answer is large") is False
+
+
+def test_procedural_request_zero_on_empty():
+    assert extract_procedural_request("") is False
+    assert extract_procedural_request("   ") is False
 
 
 # --- hedging ---

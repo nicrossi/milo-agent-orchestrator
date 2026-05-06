@@ -26,6 +26,15 @@ from src.policy.types import Scores, UserSignals
 # How many recent turns (including current) feed `hint_abuse`.
 _HINT_ABUSE_WINDOW = 3
 
+# How many recent turns (including current) feed `procedural_block`. A 4-turn
+# window with the rule's > 0.45 threshold matches the "expressed twice" gate
+# from the Scaffolding Pivot strategy.
+_PROCEDURAL_BLOCK_WINDOW = 4
+# When prior_attempt is False, the score is multiplied by this factor — so a
+# turn-1 "give me the formula" with no demonstrated effort can never trip the
+# rule. ElicitAttemptRule keeps handling that path.
+_NO_PRIOR_ATTEMPT_DAMPENER = 0.3
+
 # Thresholds (tuned for current scaling of latency_z / length_z extractors).
 _LATENCY_SLOW_Z = 1.0          # > +1σ on latency means slow
 _LENGTH_SHORT_Z = -0.5         # < -0.5σ on length means short
@@ -98,10 +107,28 @@ def compute_scores(
     # Affective signature: confusion-dominant + hedging-flavored.
     affect_load = _clamp01(0.6 * current.confusion + 0.4 * current.hedging)
 
+    # ---- procedural_block --------------------------------------------------
+    # Sustained, post-attempt procedural-fact requests. The score is gated on
+    # `prior_attempt` so a turn-1 fishing expedition can never cross the rule
+    # threshold; it climbs as the student repeats the signal across turns.
+    proc_recent: list[UserSignals] = (
+        list(window[-(_PROCEDURAL_BLOCK_WINDOW - 1):]) + [current]
+    )
+    prior_attempt = any(s.attempt_present for s in window)
+    proc_rate = sum(1 for s in proc_recent if s.procedural_request) / float(
+        len(proc_recent)
+    )
+    dar_rate = sum(1 for s in proc_recent if s.direct_answer_request) / float(
+        len(proc_recent)
+    )
+    gate = 1.0 if prior_attempt else _NO_PRIOR_ATTEMPT_DAMPENER
+    procedural_block = _clamp01(gate * (0.7 * proc_rate + 0.3 * dar_rate))
+
     return Scores(
         struggle=struggle,
         miscalibration=miscalibration,
         hint_abuse=hint_abuse,
         help_avoidance=help_avoidance,
         affect_load=affect_load,
+        procedural_block=procedural_block,
     )
