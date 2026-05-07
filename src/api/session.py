@@ -313,8 +313,29 @@ class ChatSession:
                 # back-and-forth that never reached natural closure — is
                 # still "in progress" from the student's POV and from the
                 # teacher's analytics POV. Status stays IN_PROGRESS until
-                # the LLM emits the closure sentinel.
-                should_evaluate = session.finalized_at is not None
+                # the LLM emits the closure sentinel (or the deadline
+                # force-evaluation sweep dispatches it).
+                is_finalized = session.finalized_at is not None
+                already_dispatched = session.status in (
+                    SessionStatus.PENDING_EVALUATION,
+                    SessionStatus.EVALUATED,
+                    SessionStatus.EVALUATION_FAILED,
+                )
+                # Sessions that finalize after the deadline are intentionally
+                # excluded from metrics — students may keep chatting for
+                # learning, but those transcripts don't feed the cohort.
+                activity_row = await db.get(ReflectionActivity, session.activity_id)
+                deadline = (
+                    activity_row.deadline if activity_row is not None else None
+                )
+                is_late = (
+                    is_finalized
+                    and deadline is not None
+                    and session.finalized_at > deadline
+                )
+                should_evaluate = (
+                    is_finalized and not already_dispatched and not is_late
+                )
                 if should_evaluate:
                     session.status = SessionStatus.PENDING_EVALUATION
                 await db.commit()

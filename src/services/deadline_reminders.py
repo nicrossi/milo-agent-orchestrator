@@ -18,19 +18,22 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 
 from src.core.database import get_db_session
 from src.core.models import (
     ActivityCourseAssignment,
     ActivityStatus,
+    ChatMessage,
     ChatSession,
     CourseEnrollment,
     ReflectionActivity,
+    SessionMetric,
     SessionStatus,
     User,
 )
 from src.services.email import frontend_base_url, render_button_email, send_email
+from src.services.metrics_evaluator import queue_evaluation
 from src.services.notifications import (
     notify_deadline_reminder,
     notify_deadline_summary,
@@ -66,6 +69,11 @@ async def stop_reminder_worker() -> None:
 async def _reminder_loop() -> None:
     while True:
         try:
+            # Force-finalize first so the teacher summary that runs next on
+            # the same tick sees the freshly queued sessions in their final
+            # status (PENDING_EVALUATION/EVALUATED) and reports an accurate
+            # cohort.
+            await _scan_deadline_force_evaluations()
             await _scan_student_reminders()
             await _scan_teacher_summaries()
         except asyncio.CancelledError:
@@ -76,6 +84,93 @@ async def _reminder_loop() -> None:
             await asyncio.sleep(SCAN_INTERVAL_SECONDS)
         except asyncio.CancelledError:
             break
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Deadline force-evaluation: at deadline, sweep IN_PROGRESS sessions that
+# the student engaged with but never wrapped via closure sentinel. Set
+# finalized_at = activity.deadline (so the teacher summary treats them as
+# "on time"), flip status to PENDING_EVALUATION, and queue evaluation on
+# the existing async worker. Empty sessions are skipped. Sessions that
+# started after the deadline are skipped so late-starters never produce
+# metrics. Idempotent: each session leaves IN_PROGRESS the moment we
+# dispatch it, so the next sweep skips it.
+# ─────────────────────────────────────────────────────────────────────────
+async def _scan_deadline_force_evaluations() -> None:
+    now = datetime.now(timezone.utc)
+
+    async with get_db_session() as db:
+        engaged_subq = exists().where(
+            (ChatMessage.session_id == ChatSession.id)
+            & (ChatMessage.role == "user")
+        )
+        stmt = (
+            select(ChatSession.id, ReflectionActivity.deadline)
+            .join(
+                ReflectionActivity,
+                ChatSession.activity_id == ReflectionActivity.id,
+            )
+            .where(ChatSession.status == SessionStatus.IN_PROGRESS)
+            .where(ReflectionActivity.deadline.is_not(None))
+            .where(ReflectionActivity.deadline <= now)
+            .where(ChatSession.started_at <= ReflectionActivity.deadline)
+            .where(engaged_subq)
+        )
+        candidates: List[Tuple] = list((await db.execute(stmt)).all())
+
+    if not candidates:
+        return
+
+    # Resolve the global agent lazily so the import order (orchestration ↔
+    # services) doesn't cause a cycle at module import time.
+    from src.orchestration.agent import get_agent
+    agent = get_agent()
+    if agent is None:
+        logger.warning(
+            "Force-evaluation sweep skipped: OrchestratorAgent unavailable."
+        )
+        return
+
+    for session_id, deadline in candidates:
+        try:
+            await _force_finalize_session(session_id, deadline, agent)
+        except Exception:
+            logger.exception(
+                "Force-finalize failed for session %s", session_id
+            )
+
+
+async def _force_finalize_session(session_id, deadline: datetime, agent) -> None:
+    """Mark one session as deadline-finalized and queue its evaluation."""
+    queued = False
+    async with get_db_session() as db:
+        # CAS-style guard: only the worker that observes IN_PROGRESS proceeds.
+        # If another tick raced us (or the student naturally closed in the
+        # meantime), this branch no-ops.
+        session = await db.get(ChatSession, session_id)
+        if session is None or session.status != SessionStatus.IN_PROGRESS:
+            return
+
+        session.finalized_at = deadline
+        session.status = SessionStatus.PENDING_EVALUATION
+
+        # SessionMetric uses session_id as PK so this is upsert-safe.
+        # policy_metrics stays empty for force-finalized sessions — there
+        # is no live MetricsCollector to snapshot. The evaluator fills in
+        # the rubric fields from the transcript.
+        metric = await db.get(SessionMetric, session_id)
+        if metric is None:
+            metric = SessionMetric(session_id=session_id)
+            db.add(metric)
+
+        await db.commit()
+        queued = True
+
+    if queued:
+        logger.info(
+            "Force-finalized session %s at deadline %s.", session_id, deadline,
+        )
+        await queue_evaluation(session_id, agent)
 
 
 # ─────────────────────────────────────────────────────────────────────────
