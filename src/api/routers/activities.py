@@ -27,7 +27,7 @@ from src.schemas.activities import (
     ActivityCreate, ActivityStudentResponse, ActivityTeacherResponse,
     ActivityDashboardResponse, CourseRef, StudentSessionRef, StudentSessionResult,
     ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
-    PaginatedStudentResults, ResultsSortBy, SortOrder,
+    PaginatedStudentResults, ResultsSortBy, SortOrder, ActivityResetRequest,
 )
 
 
@@ -309,6 +309,48 @@ async def assign_activity_to_courses(
             )
 
         await db.flush()
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
+
+
+@router.post("/{activity_id}/reset", response_model=ActivityTeacherResponse)
+async def reset_activity(
+    activity_id: UUID,
+    payload: ActivityResetRequest,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    from sqlalchemy import delete
+    from datetime import datetime, timezone, timedelta
+    from src.core.models import ChatMessage
+    
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity:
+            raise HTTPException(status_code=404, detail="Activity not found")
+
+        # Update the deadline to 30 days from today
+        activity.deadline = datetime.now(timezone.utc) + timedelta(days=30)
+        activity.deadline_reminder_sent_at = None
+        activity.deadline_summary_sent_at = None
+
+        # Find sessions to delete
+        session_stmt = select(ChatSession.id).where(ChatSession.activity_id == activity_id)
+        if payload.student_id:
+            session_stmt = session_stmt.where(ChatSession.student_id == payload.student_id)
+        
+        result = await db.execute(session_stmt)
+        session_ids = [row[0] for row in result.all()]
+
+        if session_ids:
+            # Delete messages
+            await db.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids)))
+            # Delete metrics
+            await db.execute(delete(SessionMetric).where(SessionMetric.session_id.in_(session_ids)))
+            # Delete sessions
+            await db.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids)))
+
+        await db.commit()
+
         courses_map = await _load_courses_for_activities(db, [activity.id])
         return _attach_courses(activity, courses_map, ActivityTeacherResponse)
 

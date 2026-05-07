@@ -62,6 +62,12 @@ class ActivityAssignCoursesRequest(BaseModel):
         description="One or more course IDs that should receive this activity.",
     )
 
+class ActivityResetRequest(BaseModel):
+    student_id: Optional[str] = Field(
+        default=None,
+        description="If provided, only reset this student's progress. Otherwise resets all students."
+    )
+
 # ------------------------------------------------------------------
 # RESPONSE PAYLOADS (What the backend sends to the frontend)
 # ------------------------------------------------------------------
