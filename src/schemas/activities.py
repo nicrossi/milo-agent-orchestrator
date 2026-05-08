@@ -48,11 +48,22 @@ class ActivityCreate(BaseModel):
         return value
 
 class ActivityUpdate(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(default=None, max_length=255)
     teacher_goal: Optional[str] = None
     context_description: Optional[str] = None
     status: Optional[ActivityStatus] = None
     deadline: Optional[datetime] = None
+
+    @field_validator("deadline")
+    @classmethod
+    def _deadline_must_be_future(cls, value: Optional[datetime]) -> Optional[datetime]:
+        if value is None:
+            return value
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        if value <= datetime.now(timezone.utc):
+            raise ValueError("deadline must be in the future")
+        return value
 
 
 class ActivityAssignCoursesRequest(BaseModel):
@@ -102,6 +113,9 @@ class ActivityStudentResponse(BaseModel):
     # Populated only on the student-facing list endpoint, scoped to the
     # requesting user. Null when no session exists yet.
     student_session: Optional[StudentSessionRef] = None
+    # Teacher-only field. Populated only when the requester owns the activity
+    # so the wizard can prefill it on edit. Hidden from other users.
+    teacher_goal: Optional[str] = None
 
     class Config:
         from_attributes = True

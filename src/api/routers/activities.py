@@ -28,6 +28,7 @@ from src.schemas.activities import (
     ActivityDashboardResponse, CourseRef, StudentSessionRef, StudentSessionResult,
     ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
     PaginatedStudentResults, ResultsSortBy, SortOrder, ActivityResetRequest,
+    ActivityUpdate,
 )
 
 
@@ -75,7 +76,7 @@ async def _load_student_sessions(db, activity_ids, student_id):
     }
 
 
-def _attach_courses(activity, courses_map, response_cls, sessions_map=None):
+def _attach_courses(activity, courses_map, response_cls, sessions_map=None, requester_uid=None):
     """Build a response model from an ORM activity, attaching its courses
     and (for student responses) the requesting user's session ref."""
     base = {
@@ -89,8 +90,12 @@ def _attach_courses(activity, courses_map, response_cls, sessions_map=None):
     }
     if response_cls is ActivityTeacherResponse:
         base["teacher_goal"] = activity.teacher_goal
-    elif response_cls is ActivityStudentResponse and sessions_map is not None:
-        base["student_session"] = sessions_map.get(activity.id)
+    elif response_cls is ActivityStudentResponse:
+        if sessions_map is not None:
+            base["student_session"] = sessions_map.get(activity.id)
+        # Owners get teacher_goal so the edit form can prefill; others don't.
+        if requester_uid is not None and activity.created_by_id == requester_uid:
+            base["teacher_goal"] = activity.teacher_goal
     return response_cls(**base)
 
 async def _notify_students_of_new_activity(activity_id: UUID) -> None:
@@ -242,14 +247,18 @@ async def list_published_activities(
             )
         )
 
+        # Owners see all their own activities (any status) so they can manage
+        # drafts. Non-owners see only PUBLISHED activities scoped to their
+        # course enrollment.
         stmt = (
             select(ReflectionActivity)
-            .where(ReflectionActivity.status == ActivityStatus.PUBLISHED)
             .where(
                 or_(
                     ReflectionActivity.created_by_id == user.uid,
-                    student_has_assignment,
-                    ~assignments_exist,
+                    and_(
+                        ReflectionActivity.status == ActivityStatus.PUBLISHED,
+                        or_(student_has_assignment, ~assignments_exist),
+                    ),
                 )
             )
             .order_by(ReflectionActivity.id.desc())
@@ -260,7 +269,9 @@ async def list_published_activities(
         courses_map = await _load_courses_for_activities(db, activity_ids)
         sessions_map = await _load_student_sessions(db, activity_ids, user.uid)
         return [
-            _attach_courses(a, courses_map, ActivityStudentResponse, sessions_map)
+            _attach_courses(
+                a, courses_map, ActivityStudentResponse, sessions_map, requester_uid=user.uid
+            )
             for a in activities
         ]
 
@@ -311,6 +322,78 @@ async def assign_activity_to_courses(
         await db.flush()
         courses_map = await _load_courses_for_activities(db, [activity.id])
         return _attach_courses(activity, courses_map, ActivityTeacherResponse)
+
+
+@router.patch("/{activity_id}", response_model=ActivityTeacherResponse)
+async def update_activity(
+    activity_id: UUID,
+    payload: ActivityUpdate,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity:
+            raise HTTPException(status_code=404, detail="Activity not found")
+        if activity.created_by_id != user.uid:
+            raise HTTPException(status_code=403, detail="Only the owner can edit this activity")
+
+        updates = payload.model_dump(exclude_unset=True)
+        non_status_fields = {k: v for k, v in updates.items() if k != "status"}
+        # Field edits are allowed only while the activity is unpublished.
+        # Status toggles (publish/unpublish/archive) are always allowed.
+        if non_status_fields and activity.status != ActivityStatus.DRAFT:
+            raise HTTPException(
+                status_code=409,
+                detail="Activity must be unpublished before its fields can be edited",
+            )
+
+        for field, value in updates.items():
+            setattr(activity, field, value)
+
+        await db.flush()
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        return _attach_courses(activity, courses_map, ActivityTeacherResponse)
+
+
+@router.delete("/{activity_id}", status_code=204)
+async def delete_activity(
+    activity_id: UUID,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    from sqlalchemy import delete
+    from src.core.models import ChatMessage
+
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity:
+            raise HTTPException(status_code=404, detail="Activity not found")
+        if activity.created_by_id != user.uid:
+            raise HTTPException(status_code=403, detail="Only the owner can delete this activity")
+        if activity.status != ActivityStatus.DRAFT:
+            raise HTTPException(
+                status_code=409,
+                detail="Activity must be unpublished before it can be deleted",
+            )
+
+        # ChatSession.activity_id has no ON DELETE CASCADE, so wipe sessions
+        # (and their messages + metrics) explicitly before removing the
+        # activity. activity_course_assignments and notifications cascade.
+        session_ids = [
+            row[0]
+            for row in (
+                await db.execute(
+                    select(ChatSession.id).where(ChatSession.activity_id == activity_id)
+                )
+            ).all()
+        ]
+        if session_ids:
+            await db.execute(delete(ChatMessage).where(ChatMessage.session_id.in_(session_ids)))
+            await db.execute(delete(SessionMetric).where(SessionMetric.session_id.in_(session_ids)))
+            await db.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids)))
+
+        await db.delete(activity)
+        await db.commit()
+    return None
 
 
 @router.post("/{activity_id}/reset", response_model=ActivityTeacherResponse)
