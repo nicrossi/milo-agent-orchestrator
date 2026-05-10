@@ -170,6 +170,20 @@ Transcript: {transcript}
     return static_prefix, dynamic_suffix
 
 
+def _coerce_confidence_score(value) -> Optional[int]:
+    """LLMs occasionally emit floats, strings, or out-of-range numbers for the
+    confidence score. Normalize to int in [0, 100] or None."""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num != num:  # NaN
+        return None
+    return max(0, min(100, int(round(num))))
+
+
 def _parse_llm_response(raw: str) -> dict:
     """Extract and parse the JSON object from the LLM response."""
     raw = raw.strip()
@@ -271,10 +285,16 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
                 "evidence": [],
                 "recommended_action": "None"
             }
+            _conf_default = {
+                "score": None,
+                "justification": "Not evaluated",
+                "evidence": [],
+            }
 
             rq = metrics.get("reflection_quality") or _rq_default
             cal = metrics.get("calibration") or _cal_default
             ct = metrics.get("contextual_transfer") or _ct_default
+            conf = metrics.get("confidence") or _conf_default
 
             metric = await db.get(SessionMetric, session_id)
             if metric is None:
@@ -295,6 +315,10 @@ async def evaluate_session(session_id: uuid.UUID, agent: 'OrchestratorAgent') ->
             metric.contextual_transfer_justification = ct.get("justification")
             metric.contextual_transfer_evidence = ct.get("evidence")
             metric.contextual_transfer_action = ct.get("recommended_action")
+
+            metric.confidence_score = _coerce_confidence_score(conf.get("score"))
+            metric.confidence_justification = conf.get("justification")
+            metric.confidence_evidence = conf.get("evidence")
 
             session = await db.get(ChatSession, session_id)
             session.status = SessionStatus.EVALUATED

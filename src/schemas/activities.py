@@ -178,6 +178,12 @@ class StudentSessionResult(BaseModel):
     calibration: Optional[CalibrationMetricResult] = None
     contextual_transfer: Optional[TransferMetricResult] = None
 
+    # LLM-inferred self-reported confidence (0-100). None when the LLM found
+    # no confidence-bearing language or the session was not evaluated.
+    confidence_score: Optional[int] = None
+    confidence_justification: Optional[str] = None
+    confidence_evidence: Optional[List[str]] = None
+
     class Config:
         from_attributes = True
 

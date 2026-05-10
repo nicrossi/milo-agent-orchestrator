@@ -410,3 +410,21 @@ CREATE INDEX IF NOT EXISTS idx_activity_files_activity_id
   ON activity_files (activity_id);
 
 COMMIT;
+
+
+-- ============================================================================
+-- Section 7 — Self-reported confidence on session_metrics
+-- ============================================================================
+-- Adds an LLM-inferred 0-100 confidence score (plus justification + evidence)
+-- alongside the existing reflection_quality / calibration / contextual_transfer
+-- fields. Distinct from calibration: confidence captures the strength of the
+-- student's *stated* confidence in the transcript, regardless of correctness.
+-- The teacher analytics CONF meter reads confidence_score directly.
+BEGIN;
+
+ALTER TABLE session_metrics
+  ADD COLUMN IF NOT EXISTS confidence_score         SMALLINT,
+  ADD COLUMN IF NOT EXISTS confidence_justification TEXT,
+  ADD COLUMN IF NOT EXISTS confidence_evidence      JSONB;
+
+COMMIT;

@@ -93,3 +93,21 @@ Measures the student's ability to map the structural rules of a core concept ont
 2.  **Check Mechanics, Not Topic:** A novel topic with broken causal logic is still `vague` or `lacking`. The structural rules of the concept must survive the transfer.
 3.  **Edge Cases Beat Restatements:** Predictions, counterexamples, and boundary conditions are stronger evidence of `meaningful` transfer than restated definitions in new wording.
 4.  **No Forced Transfer:** If the interaction never elicited an application attempt, classify based on what the student volunteered. Do not penalize for missing prompts the student was never asked.
+
+### 4. Self-Reported Confidence
+Measures the strength of the confidence the student *expresses* about their own understanding in the transcript. This metric judges only the student's stated stance — it does **not** judge whether the student is correct. Correctness vs. self-perception is the job of the `calibration` metric.
+
+Output an integer `score` from 0 to 100 inferred from the student's hedging, certainty markers, and self-statements about their own knowledge. Output `null` for `score` if the transcript contains no confidence-bearing utterances (e.g., a single greeting, or only factual restatement with no first-person stance).
+
+#### Score anchors
+- **85–100** — Assertive, declarative, no hedging. Markers: "obviously", "I know this", "definitely", "for sure", flat statements presented as fact, no qualifiers.
+- **60–84** — Confident but with mild hedging. Markers: "I'm pretty sure", "I think it's…", "yeah, probably", "I get this part".
+- **40–59** — Mixed or shifting confidence. Markers: "kind of get it", "maybe…", "I think but I'm not sure", student volunteers an answer then second-guesses.
+- **15–39** — Predominantly uncertain but engaged. Markers: "I'm not really sure", "I might be wrong", "I guess?", expressions of partial confusion.
+- **0–14** — Explicit lack of knowledge. Markers: "I have no idea", "I don't know", "I'm totally lost", refusal to answer due to not knowing.
+
+#### Important considerations
+1.  **Stance, not correctness.** A student can be confidently wrong (high confidence, misaligned calibration) or correctly humble (low confidence, aligned calibration). Score the *stance only*.
+2.  **Quote selection.** `evidence` must be 1–3 direct quotes from the student that contain the confidence-bearing language used to derive the score.
+3.  **Stable-state, not peak.** If the student starts uncertain and ends assertive (or vice versa), score the predominant or final stable stance, not the peak. Note the trajectory in `justification`.
+4.  **Null safely.** If the student only restates facts neutrally with no first-person framing, prefer `null` over guessing a midpoint.

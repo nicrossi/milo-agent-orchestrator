@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, JSON, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, JSON, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from enum import Enum as PyEnum
@@ -282,6 +282,13 @@ class SessionMetric(Base):
     contextual_transfer_justification: Mapped[str] = mapped_column(Text, nullable=True)
     contextual_transfer_evidence: Mapped[list] = mapped_column(JSON, nullable=True)
     contextual_transfer_action: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Self-Reported Confidence (LLM-inferred 0-100 from transcript language).
+    # Distinct from calibration: this measures the strength of the student's
+    # stated confidence, not whether that confidence matches reality.
+    confidence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence_evidence: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Phase 5: per-session policy-engine telemetry (MetricsCollector.snapshot()).
     policy_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)

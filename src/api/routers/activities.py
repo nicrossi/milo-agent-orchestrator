@@ -710,6 +710,9 @@ async def get_activity_results(
                     evidence=metric.contextual_transfer_evidence,
                     recommended_action=metric.contextual_transfer_action,
                 ) if metric and metric.contextual_transfer_level else None,
+                confidence_score=metric.confidence_score if metric else None,
+                confidence_justification=metric.confidence_justification if metric else None,
+                confidence_evidence=metric.confidence_evidence if metric else None,
             ))
 
         total_pages = math.ceil(total / page_size) if total > 0 else 0
