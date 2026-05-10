@@ -5,12 +5,27 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from src.core.models import (
+    ActivityFileStatus,
     ActivityStatus,
     SessionStatus,
     ReflectionLevel,
     CalibrationLevel,
     TransferLevel,
 )
+
+
+# Mirrors what milo-ingest's parser handles. Keep in sync with the parser if
+# new types are added.
+ALLOWED_FILE_CONTENT_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+}
+MAX_FILE_BYTES = 25 * 1024 * 1024
+MAX_FILES_PER_ACTIVITY = 5
 
 class ResultsSortBy(str, Enum):
     STARTED_AT = "started_at"
@@ -173,6 +188,43 @@ class PaginatedStudentResults(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+class ActivityFileCreateRequest(BaseModel):
+    filename: str = Field(..., max_length=500)
+    content_type: str = Field(..., max_length=255)
+    size_bytes: int = Field(..., gt=0, le=MAX_FILE_BYTES)
+
+    @field_validator("content_type")
+    @classmethod
+    def _content_type_allowed(cls, value: str) -> str:
+        if value not in ALLOWED_FILE_CONTENT_TYPES:
+            raise ValueError(
+                f"unsupported content_type; allowed: {sorted(ALLOWED_FILE_CONTENT_TYPES)}"
+            )
+        return value
+
+
+class ActivityFilePresignResponse(BaseModel):
+    file_id: UUID
+    upload_url: str
+    method: str = "PUT"
+    required_headers: dict
+    expires_in: int
+
+
+class ActivityFileResponse(BaseModel):
+    id: UUID
+    activity_id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+    status: ActivityFileStatus
+    created_at: datetime
+    confirmed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 
 class ActivityDashboardResponse(BaseModel):
     """

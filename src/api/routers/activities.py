@@ -1,7 +1,8 @@
 import logging
 import math
+from datetime import datetime, timezone
 from typing import List
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import and_, asc, desc, exists, func, or_, select
@@ -10,6 +11,8 @@ from src.core.database import get_db_session
 from src.core.auth import AuthenticatedUser, require_http_user, require_teacher
 from src.core.models import (
     ActivityCourseAssignment,
+    ActivityFile,
+    ActivityFileStatus,
     ActivityStatus,
     ChatSession,
     Course,
@@ -18,6 +21,7 @@ from src.core.models import (
     SessionMetric,
     User,
 )
+from src.services import s3 as s3_service
 from src.services.email import frontend_base_url, render_button_email, send_email
 from src.services.notifications import notify_new_activity
 
@@ -29,6 +33,8 @@ from src.schemas.activities import (
     ReflectionMetricResult, CalibrationMetricResult, TransferMetricResult,
     PaginatedStudentResults, ResultsSortBy, SortOrder, ActivityResetRequest,
     ActivityUpdate,
+    ActivityFileCreateRequest, ActivityFilePresignResponse, ActivityFileResponse,
+    MAX_FILES_PER_ACTIVITY,
 )
 
 
@@ -393,6 +399,187 @@ async def delete_activity(
 
         await db.delete(activity)
         await db.commit()
+    return None
+
+
+async def _load_owned_draft_activity(db, activity_id: UUID, user: AuthenticatedUser) -> ReflectionActivity:
+    """Load activity, enforce ownership and DRAFT status. Used for file
+    mutations — same rule as field edits in update_activity()."""
+    activity = await db.get(ReflectionActivity, activity_id)
+    if not activity:
+        raise HTTPException(status_code=404, detail="Activity not found")
+    if activity.created_by_id != user.uid:
+        raise HTTPException(status_code=403, detail="Only the owner can manage activity files")
+    if activity.status != ActivityStatus.DRAFT:
+        raise HTTPException(
+            status_code=409,
+            detail="Activity must be unpublished before its files can be modified",
+        )
+    return activity
+
+
+@router.post("/{activity_id}/files", response_model=ActivityFilePresignResponse)
+async def request_activity_file_upload(
+    activity_id: UUID,
+    payload: ActivityFileCreateRequest,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    """Step 2 of the upload flow: issue a presigned PUT URL the frontend
+    uses to upload directly to S3 with the activity_id baked into object
+    metadata. milo-ingest will pick the object up via SQS and embed it."""
+    async with get_db_session() as db:
+        activity = await _load_owned_draft_activity(db, activity_id, user)
+
+        existing_count = (
+            await db.execute(
+                select(func.count(ActivityFile.id)).where(
+                    ActivityFile.activity_id == activity.id
+                )
+            )
+        ).scalar_one()
+        if existing_count >= MAX_FILES_PER_ACTIVITY:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Maximum {MAX_FILES_PER_ACTIVITY} files per activity",
+            )
+
+        file_id = uuid4()
+        s3_key = f"activities/{activity.id}/{file_id}/{payload.filename}"
+        metadata = {
+            "activity-id": str(activity.id),
+            "file-id": str(file_id),
+            "uploaded-by": user.uid,
+        }
+
+        row = ActivityFile(
+            id=file_id,
+            activity_id=activity.id,
+            uploaded_by_id=user.uid,
+            filename=payload.filename,
+            s3_key=s3_key,
+            content_type=payload.content_type,
+            size_bytes=payload.size_bytes,
+            status=ActivityFileStatus.PENDING.value,
+        )
+        db.add(row)
+        await db.flush()
+
+        try:
+            upload_url = s3_service.generate_presigned_put(
+                key=s3_key,
+                content_type=payload.content_type,
+                content_length=payload.size_bytes,
+                metadata=metadata,
+            )
+        except Exception:
+            logger.exception("Failed to generate presigned PUT for activity %s", activity.id)
+            raise HTTPException(status_code=502, detail="Could not issue upload URL")
+
+        required_headers = {
+            "Content-Type": payload.content_type,
+            "x-amz-meta-activity-id": metadata["activity-id"],
+            "x-amz-meta-file-id": metadata["file-id"],
+            "x-amz-meta-uploaded-by": metadata["uploaded-by"],
+        }
+        return ActivityFilePresignResponse(
+            file_id=file_id,
+            upload_url=upload_url,
+            method="PUT",
+            required_headers=required_headers,
+            expires_in=900,
+        )
+
+
+@router.post(
+    "/{activity_id}/files/{file_id}/confirm",
+    response_model=ActivityFileResponse,
+)
+async def confirm_activity_file_upload(
+    activity_id: UUID,
+    file_id: UUID,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    """Verifies the object landed in S3 with the expected metadata and size,
+    then flips the row to UPLOADED. milo-ingest's SQS-driven embedding job
+    runs independently and may already have completed."""
+    async with get_db_session() as db:
+        activity = await _load_owned_draft_activity(db, activity_id, user)
+
+        row = await db.get(ActivityFile, file_id)
+        if not row or row.activity_id != activity.id:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        head = s3_service.head_object(row.s3_key)
+        if head is None:
+            raise HTTPException(status_code=409, detail="Upload not found in S3 yet")
+
+        s3_metadata = {k.lower(): v for k, v in (head.get("Metadata") or {}).items()}
+        if s3_metadata.get("activity-id") != str(activity.id):
+            raise HTTPException(status_code=409, detail="Uploaded object metadata mismatch")
+        if int(head.get("ContentLength", -1)) != row.size_bytes:
+            raise HTTPException(status_code=409, detail="Uploaded object size mismatch")
+
+        row.status = ActivityFileStatus.UPLOADED.value
+        row.confirmed_at = datetime.now(timezone.utc)
+        await db.flush()
+        return ActivityFileResponse.model_validate(row)
+
+
+@router.get(
+    "/{activity_id}/files",
+    response_model=List[ActivityFileResponse],
+)
+async def list_activity_files(
+    activity_id: UUID,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    """Owner-only list of UPLOADED files for the activity."""
+    async with get_db_session() as db:
+        activity = await db.get(ReflectionActivity, activity_id)
+        if not activity:
+            raise HTTPException(status_code=404, detail="Activity not found")
+        if activity.created_by_id != user.uid:
+            raise HTTPException(status_code=403, detail="Only the owner can view activity files")
+
+        rows = (
+            await db.execute(
+                select(ActivityFile)
+                .where(
+                    and_(
+                        ActivityFile.activity_id == activity.id,
+                        ActivityFile.status == ActivityFileStatus.UPLOADED.value,
+                    )
+                )
+                .order_by(ActivityFile.created_at.asc())
+            )
+        ).scalars().all()
+        return [ActivityFileResponse.model_validate(r) for r in rows]
+
+
+@router.delete(
+    "/{activity_id}/files/{file_id}",
+    status_code=204,
+)
+async def delete_activity_file(
+    activity_id: UUID,
+    file_id: UUID,
+    user: AuthenticatedUser = Depends(require_teacher),
+):
+    """Delete the S3 object and the metadata row. milo-ingest reacts to the
+    S3 ObjectRemoved event and clears the matching embedding rows."""
+    async with get_db_session() as db:
+        activity = await _load_owned_draft_activity(db, activity_id, user)
+
+        row = await db.get(ActivityFile, file_id)
+        if not row or row.activity_id != activity.id:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        try:
+            s3_service.delete_object(row.s3_key)
+        except Exception:
+            raise HTTPException(status_code=502, detail="Failed to delete file from storage")
+
+        await db.delete(row)
     return None
 
 

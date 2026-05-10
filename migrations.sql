@@ -381,3 +381,32 @@ ALTER TABLE reflection_activities
   DROP COLUMN IF EXISTS all_completed_notified_at;
 
 COMMIT;
+
+
+-- ============================================================================
+-- Section 6 — Activity context files
+-- ============================================================================
+-- Teachers attach up to 5 files per ReflectionActivity. Files are uploaded
+-- directly to S3 via presigned PUT URLs issued by the orchestrator; the
+-- activity_id is included as S3 object metadata so milo-ingest can scope
+-- the resulting embeddings (document_embeddings.activity_id). Mutations
+-- are gated to DRAFT activities by the API layer.
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS activity_files (
+  id              UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  activity_id     UUID         NOT NULL REFERENCES reflection_activities(id) ON DELETE CASCADE,
+  uploaded_by_id  VARCHAR(255) NOT NULL REFERENCES users(id),
+  filename        VARCHAR(500) NOT NULL,
+  s3_key          VARCHAR(1000) NOT NULL UNIQUE,
+  content_type    VARCHAR(255) NOT NULL,
+  size_bytes      BIGINT       NOT NULL,
+  status          VARCHAR(20)  NOT NULL DEFAULT 'PENDING',
+  created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  confirmed_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_files_activity_id
+  ON activity_files (activity_id);
+
+COMMIT;
