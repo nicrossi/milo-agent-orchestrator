@@ -24,7 +24,7 @@ async def transcribe_audio(
     if len(audio_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
-            detail=f"Audio exceeds {MAX_UPLOAD_BYTES} bytes.",
+            detail="Audio file exceeds the 25 MB limit.",
         )
     if len(audio_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty audio upload.")
