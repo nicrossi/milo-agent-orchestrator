@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.api.routers import activities, admin, chat, courses, me, policy, students
+from src.api.routers import activities, admin, audio, chat, courses, me, policy, students
 from src.core.database import init_db, close_db
 from src.services.rag import IntegratedRAGService
 from src.services.metrics_evaluator import start_worker, stop_worker
@@ -68,6 +68,7 @@ app.include_router(students.router)
 app.include_router(me.router)
 app.include_router(admin.router)
 app.include_router(policy.router)
+app.include_router(audio.router)
 
 @app.get("/healthcheck", tags=["System"])
 def health_check():
