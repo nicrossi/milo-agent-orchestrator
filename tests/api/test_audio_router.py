@@ -57,3 +57,11 @@ async def test_transcribe_forwards_language_hint(client):
 
     assert response.status_code == 200
     assert captured["language_hint"] == "es"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_requires_auth_when_enabled(client, monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    files = {"file": ("audio.webm", b"\x00", "audio/webm")}
+    response = await client.post("/audio/transcribe", files=files)
+    assert response.status_code == 401
