@@ -70,4 +70,10 @@ Tables are created automatically on startup via the FastAPI lifespan hook.
 
 ---
 
+## Privacy
+
+**Privacy note:** When the speech-to-text endpoint (`POST /audio/transcribe`) is used, the uploaded audio is sent to the OpenAI Whisper API for transcription. Before deploying to real students, ensure your data-handling policy and consent flows reflect this.
+
+---
+
 For more details, refer to the [README](../README.md).
