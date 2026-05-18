@@ -62,10 +62,10 @@ Follow these steps to run the project locally:
 3. **Start the Server**:
 
    ```bash
-   uvicorn src.main:app --port 3000
+   uvicorn src.main:app --port 3001
    ```
 
-The server will be available at `http://localhost:3000`.
+The server will be available at `http://localhost:3001` (the frontend dev server uses `:3000`).
 Tables are created automatically on startup via the FastAPI lifespan hook.
 
 ---
