@@ -38,6 +38,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 | Framework   | FastAPI 0.135                       |
 | Database    | PostgreSQL via SQLAlchemy (asyncpg) |
 | LLM         | Google Gemini (google-genai)        |
+| STT         | OpenAI Whisper (`/audio/transcribe`)|
 | RAG         | External HTTP service (httpx)       |
 | Runtime     | Python 3.11+, uvicorn               |
 

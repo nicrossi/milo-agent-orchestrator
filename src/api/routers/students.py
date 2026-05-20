@@ -54,6 +54,10 @@ async def list_students_for_teacher(
                 )
             ).all()
 
+            # Count only LLM-finalized sessions — i.e. activities the
+            # student actually completed. In-progress / greeting-only
+            # sessions don't represent meaningful "activity" and would
+            # otherwise inflate the "Most active students" KPI.
             session_count = (
                 await db.execute(
                     select(func.count(ChatSession.id))
@@ -61,6 +65,7 @@ async def list_students_for_teacher(
                     .where(
                         ChatSession.student_id == student.id,
                         ReflectionActivity.created_by_id == user.uid,
+                        ChatSession.finalized_at.is_not(None),
                     )
                 )
             ).scalar_one()

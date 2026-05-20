@@ -654,3 +654,25 @@ S: Oh my god. I was so busy critiquing the educational system that I literally f
 M: Identifying that arrogance is a huge step forward! Can you relate this idea of a fixed boundary enclosing more space to anything else?
 S: I am frankly too overwhelmed by my own hubris right now. I completely failed this basic construct and have no mental bandwidth to think of an analogy.
 {"reflection_quality":{"level":"exceptional","justification":"The student correctly assesses that their macro-level critique ('busy critiquing the educational system') acted as a defensive blinder preventing them from doing basic empiricism.","evidence":["I was so busy critiquing the educational system that I literally failed 3rd-grade math. My arrogance blinded me."]},"calibration":{"level":"misaligned","justification":"The student offers massive overconfidence ('I'm 100% correct', 'sees right through the trick') while entirely missing the reality of the math calculation.","evidence":["The longest side always wins. I'm 100% correct."]},"contextual_transfer":{"level":"lacking","justification":"The student provides no transfer attempt, stating their hubris has overwhelmed their processing capacity.","evidence":["I am frankly too overwhelmed by my own hubris right now... have no mental bandwidth to think of an analogy."]},"recommended_action":"De-escalate the emotional stakes. Tell them everyone gets tripped up, and offer a simple physical trick—like reshaping a pizza dough ball—to get their thoughts moving again."}
+
+---
+
+## Confidence-only mini examples
+
+The full examples above predate the `confidence` metric and intentionally do not show it; treat them as authoritative for `reflection_quality` / `calibration` / `contextual_transfer` only. The mini examples below are the canonical anchors for `confidence`. Score the *stance* the student expresses, never their correctness.
+
+### C1. High confidence (≈90)
+S: Obviously the mass came from CO2. That's just how photosynthesis works, I learned this years ago.
+{"confidence":{"score":90,"justification":"Flat, declarative tone with explicit certainty markers ('obviously', 'just how it works') and no hedging.","evidence":["Obviously the mass came from CO2.","That's just how photosynthesis works"]}}
+
+### C2. Mid confidence with hedging (≈55)
+S: I think it's mostly the water? And maybe a bit of air. I'm not totally sure but that feels right.
+{"confidence":{"score":55,"justification":"Student volunteers an answer but cushions every claim with hedges ('I think', 'maybe', 'not totally sure', 'feels right'), signaling mixed confidence.","evidence":["I think it's mostly the water?","I'm not totally sure but that feels right."]}}
+
+### C3. Low confidence (≈15)
+S: Honestly I have no idea. I don't remember any of this. Maybe the soil? I really don't know.
+{"confidence":{"score":15,"justification":"Explicit admissions of not knowing ('no idea', 'don't remember', 'really don't know') dominate the response; the lone guess is itself hedged.","evidence":["Honestly I have no idea.","I really don't know."]}}
+
+### C4. Null — no confidence-bearing language
+S: Photosynthesis is a process where plants convert sunlight into energy.
+{"confidence":{"score":null,"justification":"Student restates a definition with no first-person stance, hedging, or certainty markers — nothing to score.","evidence":[]}}

@@ -47,6 +47,12 @@ class VectorDBRepository:
         # Activity-scoped retrieval takes precedence: when a student is
         # chatting inside an activity, every student on that activity should
         # see the same teacher-provided embeddings (joined on activity_id).
+        #
+        # TODO: the activity_id column was added late via
+        # migration-document-embeddings-activity-id.sql; existing rows are
+        # NULL, so this branch returns empty until embeddings are re-ingested
+        # with activity_id set. A backfill job (assign each row's
+        # activity_id from its source upload) is the proper follow-up.
         if activity_id:
             sql = text(f"""
                 SELECT chunk_text

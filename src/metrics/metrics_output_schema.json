@@ -19,6 +19,11 @@
       "justification": "string",
       "evidence": ["string"],
       "recommended_action": "string"
+    },
+    "confidence": {
+      "score": "integer 0-100 | null",
+      "justification": "string",
+      "evidence": ["string"]
     }
   }
 }

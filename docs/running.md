@@ -14,6 +14,7 @@ The following environment variables must be set for the application to run:
 | `GOOGLE_API_KEY`              | No*      | Google Gemini API key (*if not using Vertex AI)  |
 | `GOOGLE_APPLICATION_CREDENTIALS`| No*    | Path to service account JSON (*if using Vertex)  |
 | `LLM_MODEL`                   | No       | Gemini model name (default: `gemini-2.5-flash`)  |
+| `OPENAI_API_KEY`              | No*      | OpenAI API key (*required for `/audio/transcribe` speech-to-text endpoint) |
 | `DB_POOL_SIZE`                | No       | SQLAlchemy pool size (default: `5`)              |
 | `DB_MAX_OVERFLOW`             | No       | SQLAlchemy max overflow (default: `10`)          |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Yes    | Path to the Firebase service account JSON file   |
@@ -29,6 +30,7 @@ VERTEX_PROJECT="your-gcp-project-id"
 VERTEX_LOCATION="us-central1"
 GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
 # GOOGLE_API_KEY="your-google-api-key" (Required if VERTEX_PROJECT is not set)
+# OPENAI_API_KEY="your-openai-api-key" (Required if using /audio/transcribe)
 LLM_MODEL="gemini-2.5-flash"
 DB_POOL_SIZE=5
 DB_MAX_OVERFLOW=10
@@ -60,11 +62,17 @@ Follow these steps to run the project locally:
 3. **Start the Server**:
 
    ```bash
-   uvicorn src.main:app --port 3000
+   uvicorn src.main:app --port 8000
    ```
 
-The server will be available at `http://localhost:3000`.
+The server will be available at `http://localhost:8000`. The frontend dev server runs on `:3000`, and the project's `.env.local` points `REACT_APP_API_BASE_URL` at `:8000`.
 Tables are created automatically on startup via the FastAPI lifespan hook.
+
+---
+
+## Privacy
+
+**Privacy note:** When the speech-to-text endpoint (`POST /audio/transcribe`) is used, the uploaded audio is sent to the OpenAI Whisper API for transcription. Before deploying to real students, ensure your data-handling policy and consent flows reflect this.
 
 ---
 

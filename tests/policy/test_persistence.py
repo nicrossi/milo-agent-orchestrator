@@ -20,6 +20,7 @@ class _FakeSession:
         self._recovery_state = RecoveryState.NORMAL
         self._turns_in_recovery = 0
         self._turns_since_meta_feedback = 3
+        self._turns_since_procedural_unblock = 5
         self._signals_window = [UserSignals(hedging=0.5)]
         self._length_window = [4, 7]
         self._latency_window = [3.2, 4.1]

@@ -3,6 +3,7 @@ aiohttp==3.13.3
 aiosignal==1.4.0
 annotated-doc==0.0.4
 annotated-types==0.7.0
+boto3==1.35.36
 anyio==4.12.1
 asttokens==3.0.1
 asyncpg==0.31.0
@@ -14,12 +15,12 @@ click==8.3.1
 cryptography==46.0.5
 decorator==5.2.1
 distro==1.9.0
+edge-tts==7.2.8
 executing==2.2.1
 fastapi==0.135.1
 filelock==3.25.0
 frozenlist==1.8.0
 fsspec==2026.2.0
-genai==2.1.0
 google-auth==2.48.0
 firebase-admin==7.1.0
 google-genai==1.65.0
@@ -42,8 +43,9 @@ mpmath==1.3.0
 multidict==6.7.1
 networkx==3.6.1
 numpy==2.4.2
-openai==0.27.10
+openai==2.37.0
 packaging==26.0
+pytest-asyncio==1.3.0
 parso==0.8.6
 pexpect==4.9.0
 prompt_toolkit==3.0.52
@@ -58,6 +60,7 @@ pydantic==2.12.5
 pydantic_core==2.41.5
 Pygments==2.19.2
 python-dotenv==1.2.2
+python-multipart==0.0.29
 PyYAML==6.0.3
 regex==2026.2.28
 requests==2.32.5
@@ -76,7 +79,7 @@ sympy==1.14.0
 tabulate==0.9.0
 tenacity==9.1.4
 threadpoolctl==3.6.0
-tiktoken==0.3.3
+tiktoken==0.13.0
 tokenizers==0.22.2
 torch==2.10.0
 tqdm==4.67.3

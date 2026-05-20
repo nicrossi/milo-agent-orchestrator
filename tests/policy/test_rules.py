@@ -1,6 +1,7 @@
 import pytest
 
 from src.policy.rules.no_direct_answers import NoDirectAnswersRule
+from src.policy.rules.procedural_unblock import ProceduralUnblockRule
 from src.policy.rules.tone_by_confidence import ToneByConfidenceRule
 from src.policy.types import (
     FSMState, PolicyContext, QuestionPlan, ResponseConstraints, Scores, UserSignals
@@ -170,3 +171,58 @@ def test_tone_no_op_when_scores_missing():
     result = ToneByConfidenceRule().apply(ctx, plan)
     assert result is None
     assert plan.tone == "neutral"
+
+
+# --- ProceduralUnblockRule ---
+
+def _ctx_with_block(score: float, turns_since: int = 99) -> PolicyContext:
+    ctx = make_ctx(scores=Scores(procedural_block=score))
+    ctx.turns_since_procedural_unblock = turns_since
+    return ctx
+
+
+def test_procedural_unblock_does_not_fire_below_threshold():
+    plan = make_plan()
+    plan.prompt_directives = ["existing directive"]
+    ctx = _ctx_with_block(0.30)
+    result = ProceduralUnblockRule().apply(ctx, plan)
+    assert result is None
+    # Untouched.
+    assert plan.constraints.forbid_direct_answer is True
+    assert plan.prompt_directives == ["existing directive"]
+
+
+def test_procedural_unblock_fires_above_threshold():
+    plan = make_plan()
+    plan.prompt_directives = ["earlier rule directive"]
+    ctx = _ctx_with_block(0.6)
+    result = ProceduralUnblockRule().apply(ctx, plan)
+    assert result == "procedural_unblock"
+    # Constraint relaxed for the prereq hand-off.
+    assert plan.constraints.forbid_direct_answer is False
+    # Earlier directives are replaced (avoids contradictory hint instructions).
+    assert len(plan.prompt_directives) == 1
+    assert "SCAFFOLDING PIVOT" in plan.prompt_directives[0]
+    # question_text replaced with placeholder.
+    assert plan.question_text.startswith("[procedural_unblock")
+
+
+def test_procedural_unblock_blocked_by_cooldown():
+    plan = make_plan()
+    ctx = _ctx_with_block(0.8, turns_since=1)
+    result = ProceduralUnblockRule().apply(ctx, plan)
+    assert result is None
+    assert plan.constraints.forbid_direct_answer is True
+
+
+def test_procedural_unblock_no_op_when_scores_missing():
+    plan = make_plan()
+    ctx = PolicyContext(
+        current_state=FSMState.PLANNING,
+        turn_count=0,
+        recent_question_ids=[],
+        user_message="",
+    )
+    # ctx.scores is None by default
+    result = ProceduralUnblockRule().apply(ctx, plan)
+    assert result is None
