@@ -114,6 +114,29 @@ _ATTEMPT_MARKERS = [
     r"\bi\s+tried\b",
 ]
 
+_PROCEDURAL_REQUEST_PATTERNS = [
+    # Spanish — "I don't remember" / "what's the formula" / "I forgot"
+    r"\bno\s+(me\s+)?acuerdo\b",
+    r"\bno\s+recuerdo\b",
+    r"\bno\s+s[eé]\s+c[oó]mo\b",
+    r"\bolvid[eé]\b",
+    r"\bme\s+olvid[eé]\b",
+    r"\bqu[eé]\s+f[oó]rmula\b",
+    r"\bcu[aá]l\s+es\s+la\s+f[oó]rmula\b",
+    r"\bdame\s+la\s+f[oó]rmula\b",
+    r"\bdec[ií]me\s+la\s+f[oó]rmula\b",
+    r"\bc[oó]mo\s+se\s+(calcula|hace)\b",
+    # English
+    r"\bi\s+don'?t\s+remember\b",
+    r"\bi\s+forgot\b",
+    r"\bi\s+don'?t\s+know\s+how\s+to\b",
+    r"\bwhat'?s\s+the\s+formula\b",
+    r"\bwhat\s+is\s+the\s+formula\b",
+    r"\bgive\s+me\s+the\s+formula\b",
+    r"\btell\s+me\s+the\s+formula\b",
+    r"\bhow\s+do\s+(you|i)\s+(calculate|compute)\b",
+]
+
 _REVISION_MARKERS = [
     # Spanish
     r"\bperd[oó]n\b",
@@ -138,6 +161,7 @@ _HEDGING_RE = [re.compile(p, re.IGNORECASE) for p in _HEDGING_PATTERNS]
 _CONFUSION_RE = [re.compile(p, re.IGNORECASE) for p in _CONFUSION_PATTERNS]
 _DIRECT_ANSWER_RE = [re.compile(p, re.IGNORECASE) for p in _DIRECT_ANSWER_PATTERNS]
 _ATTEMPT_RE = [re.compile(p, re.IGNORECASE) for p in _ATTEMPT_MARKERS]
+_PROCEDURAL_REQUEST_RE = [re.compile(p, re.IGNORECASE) for p in _PROCEDURAL_REQUEST_PATTERNS]
 _REVISION_RE = [re.compile(p, re.IGNORECASE) for p in _REVISION_MARKERS]
 
 # Saturation cap: if a 5-word message has 2 hedges, hedging score ≈ 1.0.
@@ -235,6 +259,19 @@ def extract_attempt_presence(text: str) -> bool:
         return False
 
     return True
+
+
+def extract_procedural_request(text: str) -> bool:
+    """True when the message explicitly signals a missing procedural prerequisite.
+
+    Distinct from `confusion` (concept-level: "I'm lost") and `hedging`
+    ("I think"). This catches "I don't remember the formula", "I forgot",
+    "what's the formula" — well-calibrated awareness of a missing low-level
+    fact. Used by ProceduralUnblockRule to decide on a Scaffolding Pivot.
+    """
+    if not text or not text.strip():
+        return False
+    return _count_pattern_hits(text, _PROCEDURAL_REQUEST_RE) > 0
 
 
 def extract_revision_markers(text: str) -> int:

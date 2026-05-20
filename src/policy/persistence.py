@@ -32,7 +32,7 @@ from src.policy.types import (
 
 logger = logging.getLogger("milo-orchestrator.policy.persistence")
 
-_CURRENT_VERSION = 1
+_CURRENT_VERSION = 2
 
 
 class PolicyStateSnapshot(BaseModel):
@@ -55,6 +55,8 @@ class PolicyStateSnapshot(BaseModel):
     recovery_state: RecoveryState = RecoveryState.NORMAL
     turns_in_recovery: int = 0
     turns_since_meta_feedback: int = 99
+    # v2: cooldown counter for ProceduralUnblockRule (Scaffolding Pivot).
+    turns_since_procedural_unblock: int = 99
 
     # Phase 1 signal windows
     signals_window: list[UserSignals] = Field(default_factory=list)
@@ -76,6 +78,7 @@ class PolicyStateSnapshot(BaseModel):
             recovery_state=session._recovery_state,
             turns_in_recovery=session._turns_in_recovery,
             turns_since_meta_feedback=session._turns_since_meta_feedback,
+            turns_since_procedural_unblock=session._turns_since_procedural_unblock,
             signals_window=list(session._signals_window),
             length_window=list(session._length_window),
             latency_window=list(session._latency_window),
@@ -125,6 +128,7 @@ class PolicyStateSnapshot(BaseModel):
         session._recovery_state = self.recovery_state
         session._turns_in_recovery = self.turns_in_recovery
         session._turns_since_meta_feedback = self.turns_since_meta_feedback
+        session._turns_since_procedural_unblock = self.turns_since_procedural_unblock
         session._signals_window = list(self.signals_window)
         session._length_window = list(self.length_window)
         session._latency_window = list(self.latency_window)

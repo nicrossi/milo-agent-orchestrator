@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, JSON, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from enum import Enum as PyEnum
@@ -124,6 +124,62 @@ class ReflectionActivity(Base):
     context_description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[ActivityStatus] = mapped_column(String(50), default=ActivityStatus.PUBLISHED)
     created_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    # Nullable for backwards compat with rows created before this column existed;
+    # the API requires a deadline on creation going forward.
+    deadline: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    deadline_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Idempotency marker for the teacher's deadline-summary notification
+    # (sent once when the activity's deadline elapses, replacing the older
+    # "all students completed" trigger).
+    deadline_summary_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ActivityFileStatus(str, PyEnum):
+    PENDING = "PENDING"
+    UPLOADED = "UPLOADED"
+
+
+class ActivityFile(Base):
+    """Teacher-uploaded file attached to a ReflectionActivity for RAG context.
+
+    The S3 object metadata `activity_id` is what the milo-ingest worker uses
+    to scope embeddings (see milo-ingest/src/main.py). This row is the
+    orchestrator's metadata mirror for listing, limit checks, and deletion.
+    """
+
+    __tablename__ = "activity_files"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    activity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reflection_activities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    uploaded_by_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("users.id"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    s3_key: Mapped[str] = mapped_column(String(1000), nullable=False, unique=True)
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ActivityFileStatus.PENDING.value
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SessionStatus(str, PyEnum):
@@ -143,6 +199,13 @@ class ChatSession(Base):
     transcript: Mapped[str] = mapped_column(Text, server_default="", default="")
     # Phase 5: serialized PolicyStateSnapshot for resumable sessions.
     policy_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Set by the LLM when it judges the reflection has reached natural closure.
+    # Status (PENDING_EVALUATION/EVALUATED) tracks the metrics-evaluation
+    # pipeline; finalized_at separately tracks "the activity is truly done".
+    # Resume logic and downstream notifications key off this column.
+    finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
 
 class ReflectionLevel(str, PyEnum):
@@ -162,6 +225,40 @@ class TransferLevel(str, PyEnum):
     LACKING = "lacking"
     VAGUE = "vague"
     MEANINGFUL = "meaningful"
+
+
+class NotificationType(str, PyEnum):
+    UNFINISHED_ACTIVITY = "unfinished_activity"
+    NEW_ACTIVITY = "new_activity"
+    DEADLINE_REMINDER = "deadline_reminder"
+    DEADLINE_SUMMARY = "deadline_summary"
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
+    activity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reflection_activities.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deep_link: Mapped[str] = mapped_column(Text, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_notifications_user_created", "user_id", "created_at"),
+    )
 
 
 class SessionMetric(Base):
@@ -185,6 +282,13 @@ class SessionMetric(Base):
     contextual_transfer_justification: Mapped[str] = mapped_column(Text, nullable=True)
     contextual_transfer_evidence: Mapped[list] = mapped_column(JSON, nullable=True)
     contextual_transfer_action: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Self-Reported Confidence (LLM-inferred 0-100 from transcript language).
+    # Distinct from calibration: this measures the strength of the student's
+    # stated confidence, not whether that confidence matches reality.
+    confidence_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence_justification: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence_evidence: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Phase 5: per-session policy-engine telemetry (MetricsCollector.snapshot()).
     policy_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)

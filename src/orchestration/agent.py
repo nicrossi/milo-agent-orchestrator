@@ -63,11 +63,17 @@ class OrchestratorAgent:
         cross_chat_memory: Optional[List[MessageDTO]] = None,
         context_description: Optional[str] = None,
         prompt_directives: Optional[List[str]] = None,
+        teacher_goal: Optional[str] = None,
     ) -> List[str]:
         # Always include Milo identity + behavior instructions.
         chunks: List[str] = [self.base_context]
         if context_description:
             chunks.append(f"The student is reflecting on: {context_description}")
+        if teacher_goal:
+            chunks.append(
+                "Activity pedagogical goal (what the student should ultimately reach): "
+                f"{teacher_goal}"
+            )
         memory_block = self._format_memory_block(cross_chat_memory or [])
         if memory_block:
             chunks.append(memory_block)
@@ -103,6 +109,7 @@ class OrchestratorAgent:
         context_description: Optional[str] = None,
         activity_id: Optional[str] = None,
         prompt_directives: Optional[List[str]] = None,
+        teacher_goal: Optional[str] = None,
     ) -> AsyncIterator[str]:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         # Note: Ownership is determined by chat_sessions, so we avoid bind_or_validate_session_owner.
@@ -123,6 +130,7 @@ class OrchestratorAgent:
         context_chunks = self._compose_context(
             rag_chunks, cross_chat_memory, context_description,
             prompt_directives=prompt_directives or [],
+            teacher_goal=teacher_goal,
         )
 
         real_query = query if query else f"Hi there! Initiate conversation based on the context."

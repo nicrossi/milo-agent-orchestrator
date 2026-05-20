@@ -194,12 +194,75 @@ def test_all_scores_in_unit_interval():
         confusion=1.0,
         attempt_present=False,
         direct_answer_request=True,
+        procedural_request=True,
         latency_z=5.0,
         length_z=-5.0,
         revisions=10,
     )
     history = [extreme, extreme, extreme]
     scores = compute_scores(history, extreme)
-    for field in ("struggle", "miscalibration", "hint_abuse", "help_avoidance", "affect_load"):
+    for field in (
+        "struggle", "miscalibration", "hint_abuse", "help_avoidance",
+        "affect_load", "procedural_block",
+    ):
         v = getattr(scores, field)
         assert 0.0 <= v <= 1.0, f"{field}={v} out of [0,1]"
+
+
+# --- procedural_block ---
+
+def _attempt(**kw) -> UserSignals:
+    return UserSignals(attempt_present=True, **kw)
+
+
+def test_procedural_block_zero_when_no_signal_no_attempt():
+    scores = compute_scores([], neutral())
+    assert scores.procedural_block == 0.0
+
+
+def test_procedural_block_below_threshold_with_no_prior_attempt():
+    # Turn 1 fishing for the formula — no prior attempt → strongly dampened.
+    current = UserSignals(procedural_request=True, direct_answer_request=True)
+    scores = compute_scores([], current)
+    # gate=0.3, proc_rate=1/1=1.0, dar_rate=1/1=1.0 → 0.3 * (0.7 + 0.3) = 0.30
+    assert scores.procedural_block <= 0.35
+    assert scores.procedural_block <= 0.45  # below rule threshold
+
+
+def test_procedural_block_crosses_threshold_after_two_signals_with_prior_attempt():
+    # Mirrors the live transcript: T1 attempt, T2 procedural_request, T3 procedural+dar.
+    window = [
+        _attempt(),                                              # T1
+        UserSignals(procedural_request=True),                    # T2
+    ]
+    current = UserSignals(procedural_request=True, direct_answer_request=True)  # T3
+    scores = compute_scores(window, current)
+    # gate=1.0, proc=2/3≈0.67, dar=1/3≈0.33 → 0.7*0.67 + 0.3*0.33 ≈ 0.57
+    assert scores.procedural_block > 0.45
+
+
+def test_procedural_block_does_not_fire_on_single_turn_after_attempt():
+    # Attempt + a single procedural request — sustained signal not yet present.
+    window = [_attempt()]
+    current = UserSignals(procedural_request=True)
+    scores = compute_scores(window, current)
+    # gate=1.0, proc=1/2=0.5, dar=0/2=0 → 0.7*0.5 = 0.35
+    assert scores.procedural_block <= 0.45
+
+
+def test_procedural_block_decays_when_signal_stops():
+    # After firing, if student moves on for several turns, the rolling
+    # window flushes the prior procedural-request signals and the score
+    # drops back below threshold.
+    window = [
+        _attempt(),
+        UserSignals(procedural_request=True),
+        UserSignals(procedural_request=True),
+        _attempt(),
+        _attempt(),
+        _attempt(),  # 3 attempts after the procedural-request burst
+    ]
+    current = _attempt()
+    scores = compute_scores(window, current)
+    # window[-3:]+[current] = four attempts → no procedural_request hits → 0
+    assert scores.procedural_block == 0.0
