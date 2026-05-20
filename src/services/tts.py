@@ -1,6 +1,5 @@
 import asyncio
 import logging
-from typing import Optional
 
 import edge_tts
 
@@ -11,7 +10,7 @@ class TTSError(Exception):
     """Raised when text-to-speech synthesis fails terminally."""
 
 
-_RETRY_TIMEOUT_S = 0.5
+_SYNTHESIS_TIMEOUT_S = 10.5  # per-attempt wall-clock budget for EdgeTTS
 
 
 async def synthesize(text: str, voice: str) -> bytes:
@@ -21,11 +20,11 @@ async def synthesize(text: str, voice: str) -> bytes:
     Raises TTSError on terminal failure.
     """
     try:
-        return await asyncio.wait_for(_synthesize_once(text, voice), timeout=_RETRY_TIMEOUT_S + 10.0)
+        return await asyncio.wait_for(_synthesize_once(text, voice), timeout=_SYNTHESIS_TIMEOUT_S)
     except Exception as first_exc:
         logger.warning("EdgeTTS first attempt failed: %s — retrying", first_exc)
         try:
-            return await asyncio.wait_for(_synthesize_once(text, voice), timeout=_RETRY_TIMEOUT_S + 10.0)
+            return await asyncio.wait_for(_synthesize_once(text, voice), timeout=_SYNTHESIS_TIMEOUT_S)
         except Exception as second_exc:
             logger.warning("EdgeTTS retry also failed: %s", second_exc)
             raise TTSError(str(second_exc)) from second_exc
