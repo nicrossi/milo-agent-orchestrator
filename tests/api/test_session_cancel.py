@@ -133,3 +133,37 @@ async def test_session_accepts_legacy_plain_text_as_message(monkeypatch):
     await asyncio.gather(loop_task, return_exceptions=True)
 
     assert seen_text == ["hello world"]
+
+
+@pytest.mark.asyncio
+async def test_session_cancel_turn_with_no_active_turn_is_noop(monkeypatch):
+    """cancel_turn when nothing is in flight should not raise and should
+    NOT emit a 'cancelled' frame (the receive loop logs and continues)."""
+    from starlette.websockets import WebSocketState
+
+    closed = asyncio.Event()
+    incoming = [json.dumps({"type": "cancel_turn"})]
+
+    async def fake_receive_text():
+        if not incoming:
+            await closed.wait()
+            raise RuntimeError("WS closed")
+        return incoming.pop(0)
+
+    ws = MagicMock()
+    ws.client_state = WebSocketState.CONNECTED
+    ws.receive_text = AsyncMock(side_effect=fake_receive_text)
+    ws.send_json = AsyncMock(return_value=None)
+    ws.close = AsyncMock(return_value=None)
+
+    session = _make_session(ws, monkeypatch)
+
+    loop_task = asyncio.create_task(session._conversation_loop())
+    await asyncio.sleep(0.1)
+    closed.set()
+    loop_task.cancel()
+    await asyncio.gather(loop_task, return_exceptions=True)
+
+    # No "cancelled" frame should have been sent (nothing was cancelled).
+    sent_types = [call.args[0].get("type") for call in ws.send_json.await_args_list]
+    assert "cancelled" not in sent_types

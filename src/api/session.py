@@ -482,21 +482,29 @@ class ChatSession:
                 if was_intercepted:
                     correction = final_text[len(full_response):]
                     await self._send_json({"type": "chunk", "text": correction})
-                    logger.info(
-                        "Session '%s': interceptor fired — correction appended.", self._session_id
-                    )
-                    # Q7: speak the correction in the same voice as the rest of the turn.
+
+                    correction_audio_ok = False
                     voice_for_correction = last_voice or audio_stream.voice_for_language(
                         audio_stream.detect_language(correction)
                     )
+                    # If no audio sentences were emitted this turn (very short
+                    # response with no terminator), last_audio_seq is -1 and
+                    # the correction goes out as seq 0. Frontend plays in arrival
+                    # order so this is harmless.
                     try:
                         correction_mp3 = await tts.synthesize(correction, voice_for_correction)
                         await self._send_json(_audio_frame(last_audio_seq + 1, correction_mp3, voice_for_correction))
+                        correction_audio_ok = True
                     except tts.TTSError as exc:
                         logger.info(
                             "Session '%s': correction TTS failed (silent degrade): %s",
                             self._session_id, exc,
                         )
+
+                    logger.info(
+                        "Session '%s': interceptor fired — correction appended (audio: %s).",
+                        self._session_id, "ok" if correction_audio_ok else "skipped",
+                    )
 
                 # Step 5: update policy state
                 self._fsm_state = decision.next_state

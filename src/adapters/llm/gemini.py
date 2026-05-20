@@ -187,25 +187,55 @@ class GeminiAdapter(BaseLLMAdapter):
         context: List[str],
         history: Optional[List[MessageDTO]] = None,
     ) -> AsyncIterator[str]:
+        from google.genai.errors import ServerError as _GenaiServerError
+
         gemini_history = self._to_gemini_history(history)
         user_message = self._build_user_message(query, context)
 
-        try:
-            chat = self.client.aio.chats.create(
-                model=self.model_name,
-                history=gemini_history,
-                config=self._config,
-            )
-            response_stream = await asyncio.wait_for(
-                chat.send_message_stream(user_message),
-                timeout=15.0  # 15 secs to connect and start receiving tokens
-            )
+        max_attempts = 3
+        first_chunk = None
+        iterator = None
 
-            async for chunk in response_stream:
-                if chunk.text:
-                    yield chunk.text
+        try:
+            for attempt in range(max_attempts):
+                try:
+                    chat = self.client.aio.chats.create(
+                        model=self.model_name,
+                        history=gemini_history,
+                        config=self._config,
+                    )
+                    response_stream = await asyncio.wait_for(
+                        chat.send_message_stream(user_message),
+                        timeout=15.0,
+                    )
+                    iterator = response_stream.__aiter__()
+                    first_chunk = await iterator.__anext__()
+                    break
+                except StopAsyncIteration:
+                    # Empty stream — nothing to yield.
+                    return
+                except _GenaiServerError as exc:
+                    is_last = attempt == max_attempts - 1
+                    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                    if is_last or code not in (503, 429, "UNAVAILABLE", "RESOURCE_EXHAUSTED"):
+                        raise
+                    backoff = 1.0 * (2 ** attempt)  # 1s, 2s, 4s
+                    logger.warning(
+                        "LLM transient error %s on attempt %d/%d (model=%s) — retrying in %.1fs",
+                        code, attempt + 1, max_attempts, self.model_name, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+
+            # First chunk acquired (or skipped). Stream the rest.
+            if first_chunk and first_chunk.text:
+                yield first_chunk.text
+            if iterator is not None:
+                async for chunk in iterator:
+                    if chunk.text:
+                        yield chunk.text
+
         except asyncio.TimeoutError as e:
-            logger.error("LLM connection timed out after 30 seconds (model=%s)", self.model_name)
+            logger.error("LLM connection timed out (model=%s)", self.model_name)
             raise RuntimeError("The LLM service took too long to respond.") from e
         except asyncio.CancelledError:
             logger.info("LLM stream cancelled mid-flight (model=%s).", self.model_name)
