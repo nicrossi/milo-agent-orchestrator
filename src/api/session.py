@@ -290,6 +290,19 @@ class ChatSession:
 
                 logger.info("Session '%s': received message.", self._session_id)
                 self._active_turn_task = asyncio.create_task(self._process_turn(user_text))
+
+                def _on_turn_done(task: asyncio.Task) -> None:
+                    if self._active_turn_task is task:
+                        self._active_turn_task = None
+                    if not task.cancelled():
+                        exc = task.exception()
+                        if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                            logger.warning(
+                                "Session '%s': background turn task raised: %s",
+                                self._session_id, exc,
+                            )
+
+                self._active_turn_task.add_done_callback(_on_turn_done)
                 # Don't await — let the receive loop continue so cancel_turn can arrive.
                 continue
 

@@ -184,7 +184,7 @@ class OrchestratorAgent:
         if not content.strip():
             return
         try:
-            await self.history_repo.save_message(db, user_id, session_id, "model", content + " [Cancelled]")
+            await self.history_repo.save_message(db, user_id, session_id, "model", content + " [Interrupted]")
             await db.commit()
             logger.info("Session '%s': saved partial (cancelled) response (%d chars).", session_id, len(content))
         except Exception:
