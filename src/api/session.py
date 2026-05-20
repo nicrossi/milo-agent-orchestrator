@@ -4,6 +4,7 @@ Encapsulates WebSocket connection lifecycle and chat session state.
 
 import asyncio
 import base64
+import json
 import logging
 import os
 import time
@@ -69,6 +70,7 @@ class ChatSession:
         # built once at setup and passed into every PolicyContext.
         self._activity_ref: Optional[ActivityRef] = None
         self._created_tasks: List[asyncio.Task] = []
+        self._active_turn_task: Optional[asyncio.Task] = None
         # Policy state — in-memory for the lifetime of this WebSocket connection.
         self._fsm_state: FSMState = FSMState.PLANNING
         self._recent_question_ids: List[str] = []
@@ -249,24 +251,69 @@ class ChatSession:
 
     async def _conversation_loop(self) -> None:
         while True:
-            user_text = await self._receive_message()
-            if user_text is None:
+            frame = await self._receive_frame()
+            if frame is None:
+                # Idle timeout / closed — cancel any in-flight turn.
+                if self._active_turn_task and not self._active_turn_task.done():
+                    self._active_turn_task.cancel()
+                    await asyncio.gather(self._active_turn_task, return_exceptions=True)
                 break
 
-            if not user_text.strip():
-                await self._send_error("Cannot process an empty message.")
+            ftype = frame.get("type")
+
+            if ftype == "cancel_turn":
+                if self._active_turn_task and not self._active_turn_task.done():
+                    logger.info(
+                        "Session '%s': cancel_turn received — cancelling in-flight turn.",
+                        self._session_id,
+                    )
+                    self._active_turn_task.cancel()
+                    await asyncio.gather(self._active_turn_task, return_exceptions=True)
+                    await self._send_json({"type": "cancelled"})
+                else:
+                    logger.info(
+                        "Session '%s': cancel_turn received — no active turn to cancel.",
+                        self._session_id,
+                    )
                 continue
 
-            logger.info("Session '%s': received message.", self._session_id)
-            await self._process_turn(user_text)
+            if ftype == "message":
+                user_text = (frame.get("text") or "").strip()
+                if not user_text:
+                    await self._send_error("Cannot process an empty message.")
+                    continue
 
-    async def _receive_message(self) -> Optional[str]:
+                # If a previous turn is still running, cancel it before starting a new one.
+                if self._active_turn_task and not self._active_turn_task.done():
+                    self._active_turn_task.cancel()
+                    await asyncio.gather(self._active_turn_task, return_exceptions=True)
+
+                logger.info("Session '%s': received message.", self._session_id)
+                self._active_turn_task = asyncio.create_task(self._process_turn(user_text))
+                # Don't await — let the receive loop continue so cancel_turn can arrive.
+                continue
+
+            await self._send_error(f"Unknown frame type: {ftype!r}")
+
+    async def _receive_frame(self) -> Optional[dict]:
+        """Receive one WS frame as JSON. Plain-text frames (legacy clients) are
+        treated as {"type": "message", "text": <the text>} for backward compatibility.
+        """
         try:
-            return await asyncio.wait_for(self._ws.receive_text(), timeout=_IDLE_TIMEOUT_SECONDS)
+            raw = await asyncio.wait_for(self._ws.receive_text(), timeout=_IDLE_TIMEOUT_SECONDS)
         except asyncio.TimeoutError:
             logger.info("Session '%s': idle timeout exceeded - closing.", self._session_id)
             await self._ws.close(code=1008, reason="Idle timeout exceeded")
             return None
+
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "type" in parsed:
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Fallback: legacy plain-text message.
+        return {"type": "message", "text": raw}
 
     async def _send_json(self, payload: dict) -> bool:
         if self._ws.client_state != WebSocketState.CONNECTED:
@@ -306,6 +353,8 @@ class ChatSession:
             if self._last_milo_response_ts is not None
             else None
         )
+
+        accumulated: List[str] = []  # promoted so CancelledError handler can read it
 
         try:
             # Step 1: derive turn count from history length
@@ -375,7 +424,6 @@ class ChatSession:
                 )
 
             # Step 3: stream with directives injected
-            accumulated: List[str] = []
             async with get_db_session() as db:
                 stream = self._agent.process_session_stream(
                     db, self._user_id, self._session_id, user_text,
@@ -478,5 +526,20 @@ class ChatSession:
             logger.error("Session '%s': agent error - %s", self._session_id, exc)
             await self._send_error(str(exc))
         except asyncio.CancelledError:
-            logger.info("Session '%s': turn cancelled mid-flight.", self._session_id)
-            raise
+            logger.info(
+                "Session '%s': turn cancelled after %d accumulated chars.",
+                self._session_id, sum(len(c) for c in accumulated),
+            )
+            # Partial save is best-effort — the agent's _stream_and_persist already
+            # handles persistence in its finally block, so we only call save_partial_response
+            # when the session-level accumulated buffer has content the agent didn't yet save.
+            if accumulated:
+                try:
+                    async with get_db_session() as db:
+                        await self._agent.save_partial_response(
+                            db, self._user_id, self._session_id, "".join(accumulated)
+                        )
+                except Exception as exc:
+                    logger.warning("Session '%s': partial save failed: %s", self._session_id, exc)
+
+            raise  # propagate so the task is marked cancelled; "cancelled" frame sent by loop

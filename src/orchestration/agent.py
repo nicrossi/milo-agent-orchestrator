@@ -173,6 +173,23 @@ class OrchestratorAgent:
         finally:
             await self._persist_model_response(db, user_id, session_id, collected, interrupted)
 
+    async def save_partial_response(
+        self, db: AsyncSession, user_id: str, session_id: str, content: str
+    ) -> None:
+        """Persist a partial agent response (cancelled mid-stream).
+
+        Called by the session's CancelledError handler when the turn was
+        interrupted before _stream_and_persist completed its own save.
+        """
+        if not content.strip():
+            return
+        try:
+            await self.history_repo.save_message(db, user_id, session_id, "model", content + " [Cancelled]")
+            await db.commit()
+            logger.info("Session '%s': saved partial (cancelled) response (%d chars).", session_id, len(content))
+        except Exception:
+            logger.error("Session '%s': failed to save partial response.", session_id, exc_info=True)
+
     async def _persist_model_response(
         self,
         db: AsyncSession,
