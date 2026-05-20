@@ -49,6 +49,19 @@ def _env_flag(name: str, default: bool = True) -> bool:
 _AUTO_EVALUATE_ON_CHAT_CLOSE = _env_flag("AUTO_EVALUATE_ON_CHAT_CLOSE", default=True)
 
 
+def _audio_frame(seq: int, mp3_bytes: bytes, voice: str) -> dict:
+    """Wire format for an audio_sentence WS frame. Single source of truth so
+    cancel/normal/interceptor paths all match.
+    """
+    return {
+        "type": "audio_sentence",
+        "seq": seq,
+        "mime": "audio/mp3",
+        "voice": voice,
+        "data": base64.b64encode(mp3_bytes).decode("ascii"),
+    }
+
+
 class ChatSession:
     """
     State wrapper around one WebSocket chat session.
@@ -456,14 +469,7 @@ class ChatSession:
                     elif isinstance(event, audio_stream.AudioSentence):
                         last_voice = event.voice
                         last_audio_seq = event.seq
-                        frame = {
-                            "type": "audio_sentence",
-                            "seq": event.seq,
-                            "mime": "audio/mp3",
-                            "voice": event.voice,
-                            "data": base64.b64encode(event.mp3_bytes).decode("ascii"),
-                        }
-                        if not await self._send_json(frame):
+                        if not await self._send_json(_audio_frame(event.seq, event.mp3_bytes, event.voice)):
                             logger.info(
                                 "Session '%s': client dropped during audio - halting.", self._session_id
                             )
@@ -485,13 +491,7 @@ class ChatSession:
                     )
                     try:
                         correction_mp3 = await tts.synthesize(correction, voice_for_correction)
-                        await self._send_json({
-                            "type": "audio_sentence",
-                            "seq": last_audio_seq + 1,
-                            "mime": "audio/mp3",
-                            "voice": voice_for_correction,
-                            "data": base64.b64encode(correction_mp3).decode("ascii"),
-                        })
+                        await self._send_json(_audio_frame(last_audio_seq + 1, correction_mp3, voice_for_correction))
                     except tts.TTSError as exc:
                         logger.info(
                             "Session '%s': correction TTS failed (silent degrade): %s",
