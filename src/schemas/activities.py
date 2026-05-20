@@ -123,6 +123,7 @@ class ActivityStudentResponse(BaseModel):
     context_description: str
     status: ActivityStatus
     created_by_id: str
+    created_at: Optional[datetime] = None
     deadline: Optional[datetime] = None
     courses: List[CourseRef] = Field(default_factory=list)
     # Populated only on the student-facing list endpoint, scoped to the
@@ -131,6 +132,12 @@ class ActivityStudentResponse(BaseModel):
     # Teacher-only field. Populated only when the requester owns the activity
     # so the wizard can prefill it on edit. Hidden from other users.
     teacher_goal: Optional[str] = None
+    # Teacher-only aggregate counts attached by the list/dashboard endpoints
+    # so the analytics activity picker and the teacher activity cards can
+    # show "X of Y students completed". Both default to None for non-teacher
+    # callers and for endpoints that don't compute them.
+    completed_count: Optional[int] = None
+    assigned_count: Optional[int] = None
 
     class Config:
         from_attributes = True

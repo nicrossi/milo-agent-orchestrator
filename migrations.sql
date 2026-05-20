@@ -435,3 +435,21 @@ ALTER TABLE session_metrics
   ADD COLUMN IF NOT EXISTS confidence_evidence      JSONB;
 
 COMMIT;
+
+
+-- ============================================================================
+-- Section 8 — reflection_activities.created_at
+-- ============================================================================
+-- Used by the teacher analytics activity picker (sort newest-first) and the
+-- activity card "Published on" stamp. Backfilled to now() on existing rows by
+-- the column DEFAULT; once added, every new activity gets the real insert
+-- timestamp via server_default.
+BEGIN;
+
+ALTER TABLE reflection_activities
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+CREATE INDEX IF NOT EXISTS ix_reflection_activities_created_at
+  ON reflection_activities (created_at);
+
+COMMIT;

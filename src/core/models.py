@@ -124,6 +124,9 @@ class ReflectionActivity(Base):
     context_description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[ActivityStatus] = mapped_column(String(50), default=ActivityStatus.PUBLISHED)
     created_by_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
     # Nullable for backwards compat with rows created before this column existed;
     # the API requires a deadline on creation going forward.
     deadline: Mapped[datetime | None] = mapped_column(

@@ -55,6 +55,52 @@ async def _load_courses_for_activities(db, activity_ids):
     return out
 
 
+async def _load_activity_stats(db, activity_ids):
+    """Return {activity_id: {"completed": int, "assigned": int}} batched.
+
+    - completed: chat_sessions for the activity with finalized_at IS NOT NULL
+    - assigned:  distinct students enrolled in any course this activity is
+                 assigned to. 0 when the activity isn't assigned to any
+                 course (i.e. it's a global/unscoped activity).
+    """
+    if not activity_ids:
+        return {}
+
+    completed_rows = (
+        await db.execute(
+            select(ChatSession.activity_id, func.count())
+            .where(ChatSession.activity_id.in_(activity_ids))
+            .where(ChatSession.finalized_at.is_not(None))
+            .group_by(ChatSession.activity_id)
+        )
+    ).all()
+    completed_map = {aid: int(count) for aid, count in completed_rows}
+
+    assigned_rows = (
+        await db.execute(
+            select(
+                ActivityCourseAssignment.activity_id,
+                func.count(func.distinct(CourseEnrollment.student_id)),
+            )
+            .join(
+                CourseEnrollment,
+                CourseEnrollment.course_id == ActivityCourseAssignment.course_id,
+            )
+            .where(ActivityCourseAssignment.activity_id.in_(activity_ids))
+            .group_by(ActivityCourseAssignment.activity_id)
+        )
+    ).all()
+    assigned_map = {aid: int(count) for aid, count in assigned_rows}
+
+    return {
+        aid: {
+            "completed": completed_map.get(aid, 0),
+            "assigned": assigned_map.get(aid, 0),
+        }
+        for aid in activity_ids
+    }
+
+
 async def _load_student_sessions(db, activity_ids, student_id):
     """Return {activity_id: StudentSessionRef} for the student's most recent
     session per activity. Activities without a session for this student are
@@ -82,26 +128,52 @@ async def _load_student_sessions(db, activity_ids, student_id):
     }
 
 
-def _attach_courses(activity, courses_map, response_cls, sessions_map=None, requester_uid=None):
+def _attach_courses(
+    activity,
+    courses_map,
+    response_cls,
+    sessions_map=None,
+    requester_uid=None,
+    stats_map=None,
+):
     """Build a response model from an ORM activity, attaching its courses
-    and (for student responses) the requesting user's session ref."""
+    and (for student responses) the requesting user's session ref.
+
+    `stats_map` is the per-activity {completed, assigned} dict produced by
+    _load_activity_stats. Counts are only attached when the requester owns
+    the activity, so non-teacher callers don't see roster totals.
+    """
     base = {
         "id": activity.id,
         "title": activity.title,
         "context_description": activity.context_description,
         "status": activity.status,
         "created_by_id": activity.created_by_id,
+        "created_at": getattr(activity, "created_at", None),
         "deadline": activity.deadline,
         "courses": courses_map.get(activity.id, []),
     }
+    is_owner = (
+        requester_uid is not None and activity.created_by_id == requester_uid
+    )
     if response_cls is ActivityTeacherResponse:
         base["teacher_goal"] = activity.teacher_goal
+        if stats_map is not None:
+            stats = stats_map.get(activity.id) or {}
+            base["completed_count"] = stats.get("completed")
+            base["assigned_count"] = stats.get("assigned")
     elif response_cls is ActivityStudentResponse:
         if sessions_map is not None:
             base["student_session"] = sessions_map.get(activity.id)
         # Owners get teacher_goal so the edit form can prefill; others don't.
-        if requester_uid is not None and activity.created_by_id == requester_uid:
+        if is_owner:
             base["teacher_goal"] = activity.teacher_goal
+        # Same gating for the aggregate counts — teachers see the roster
+        # totals on their own activities; students don't.
+        if is_owner and stats_map is not None:
+            stats = stats_map.get(activity.id) or {}
+            base["completed_count"] = stats.get("completed")
+            base["assigned_count"] = stats.get("assigned")
     return response_cls(**base)
 
 async def _notify_students_of_new_activity(activity_id: UUID) -> None:
@@ -267,16 +339,28 @@ async def list_published_activities(
                     ),
                 )
             )
-            .order_by(ReflectionActivity.id.desc())
+            # created_at first so the picker defaults to "most recently
+            # published"; id desc as a stable tiebreaker for legacy rows
+            # backfilled to the same migration timestamp.
+            .order_by(ReflectionActivity.created_at.desc(), ReflectionActivity.id.desc())
         )
         result = await db.execute(stmt)
         activities = result.scalars().all()
         activity_ids = [a.id for a in activities]
         courses_map = await _load_courses_for_activities(db, activity_ids)
         sessions_map = await _load_student_sessions(db, activity_ids, user.uid)
+        # Roster + completion counts. _attach_courses only surfaces them to
+        # the activity owner so non-teacher callers see Optional[int] = None.
+        owned_ids = [a.id for a in activities if a.created_by_id == user.uid]
+        stats_map = await _load_activity_stats(db, owned_ids)
         return [
             _attach_courses(
-                a, courses_map, ActivityStudentResponse, sessions_map, requester_uid=user.uid
+                a,
+                courses_map,
+                ActivityStudentResponse,
+                sessions_map,
+                requester_uid=user.uid,
+                stats_map=stats_map,
             )
             for a in activities
         ]
@@ -643,6 +727,18 @@ async def get_activity_results(
         if not activity:
             raise HTTPException(status_code=404, detail="Activity not found")
 
+        # --- Attach courses + completion stats to the activity payload so
+        # the analytics header / picker share the same fields as the list ---
+        courses_map = await _load_courses_for_activities(db, [activity.id])
+        stats_map = await _load_activity_stats(db, [activity.id])
+        activity_response = _attach_courses(
+            activity,
+            courses_map,
+            ActivityTeacherResponse,
+            requester_uid=user.uid,
+            stats_map=stats_map,
+        )
+
         # --- Build base filter (optionally narrowed to latest session per student) ---
         if latest_per_student:
             # PostgreSQL DISTINCT ON: pick newest session per student.
@@ -718,7 +814,7 @@ async def get_activity_results(
         total_pages = math.ceil(total / page_size) if total > 0 else 0
 
         return ActivityDashboardResponse(
-            activity=ActivityTeacherResponse.model_validate(activity),
+            activity=activity_response,
             results=PaginatedStudentResults(
                 items=items,
                 total=total,
