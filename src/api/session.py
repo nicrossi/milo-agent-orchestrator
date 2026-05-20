@@ -3,6 +3,7 @@ Encapsulates WebSocket connection lifecycle and chat session state.
 """
 
 import asyncio
+import base64
 import logging
 import os
 import time
@@ -12,6 +13,7 @@ import uuid
 from fastapi import WebSocket, BackgroundTasks
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
+from src.api import audio_stream
 from src.core.database import get_db_session
 from src.core.models import ChatSession as ChatSessionModel, SessionStatus, SessionMetric, ReflectionActivity
 from src.orchestration.agent import OrchestratorAgent
@@ -27,6 +29,7 @@ from src.policy.types import (
     RecoveryState,
     UserSignals,
 )
+from src.services import tts
 from src.services.metrics_evaluator import queue_evaluation
 
 logger = logging.getLogger("milo-orchestrator.session")
@@ -379,13 +382,31 @@ class ChatSession:
                     self._context_description, self._activity_id,
                     prompt_directives=prompt_directives,
                 )
-                async for chunk in stream:
-                    accumulated.append(chunk)
-                    if not await self._send_json({"type": "chunk", "text": chunk}):
-                        logger.info(
-                            "Session '%s': client dropped mid-stream - halting.", self._session_id
-                        )
-                        return
+                last_voice: Optional[str] = None
+                last_audio_seq: int = -1
+                async for event in audio_stream.wrap(stream):
+                    if isinstance(event, audio_stream.TextChunk):
+                        accumulated.append(event.text)
+                        if not await self._send_json({"type": "chunk", "text": event.text}):
+                            logger.info(
+                                "Session '%s': client dropped mid-stream - halting.", self._session_id
+                            )
+                            return
+                    elif isinstance(event, audio_stream.AudioSentence):
+                        last_voice = event.voice
+                        last_audio_seq = event.seq
+                        frame = {
+                            "type": "audio_sentence",
+                            "seq": event.seq,
+                            "mime": "audio/mp3",
+                            "voice": event.voice,
+                            "data": base64.b64encode(event.mp3_bytes).decode("ascii"),
+                        }
+                        if not await self._send_json(frame):
+                            logger.info(
+                                "Session '%s': client dropped during audio - halting.", self._session_id
+                            )
+                            return
 
             # Step 4: output interception
             if decision is not None:
@@ -397,6 +418,24 @@ class ChatSession:
                     logger.info(
                         "Session '%s': interceptor fired — correction appended.", self._session_id
                     )
+                    # Q7: speak the correction in the same voice as the rest of the turn.
+                    voice_for_correction = last_voice or audio_stream.voice_for_language(
+                        audio_stream.detect_language(correction)
+                    )
+                    try:
+                        correction_mp3 = await tts.synthesize(correction, voice_for_correction)
+                        await self._send_json({
+                            "type": "audio_sentence",
+                            "seq": last_audio_seq + 1,
+                            "mime": "audio/mp3",
+                            "voice": voice_for_correction,
+                            "data": base64.b64encode(correction_mp3).decode("ascii"),
+                        })
+                    except tts.TTSError as exc:
+                        logger.info(
+                            "Session '%s': correction TTS failed (silent degrade): %s",
+                            self._session_id, exc,
+                        )
 
                 # Step 5: update policy state
                 self._fsm_state = decision.next_state
