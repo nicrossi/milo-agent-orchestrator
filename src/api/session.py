@@ -97,6 +97,15 @@ class ChatSession:
         self._activity_ref: Optional[ActivityRef] = None
         self._created_tasks: List[asyncio.Task] = []
         self._active_turn_task: Optional[asyncio.Task] = None
+        # Interrupt-and-bundle: when a new `message` frame arrives while a
+        # turn is mid-flight, we cancel the turn (set _interrupt_requested
+        # so the agent skips persistence) and stash the cancelled turn's
+        # text in _pending_prefix so the new turn bundles old + new
+        # chronologically. Distinct from `cancel_turn` (barge-in via mic),
+        # which uses the existing `cancelled` frame and persists the partial.
+        self._interrupt_requested: bool = False
+        self._current_turn_text: Optional[str] = None
+        self._pending_prefix: str = ""
         # Policy state — in-memory for the lifetime of this WebSocket connection.
         self._fsm_state: FSMState = FSMState.PLANNING
         self._recent_question_ids: List[str] = []
@@ -465,17 +474,35 @@ class ChatSession:
                     await self._send_error("Cannot process an empty message.")
                     continue
 
-                # If a previous turn is still running, cancel it before starting a new one.
+                # If a previous turn is still running, cancel it and carry its
+                # text forward via _pending_prefix so the new turn bundles
+                # old + new chronologically. _interrupt_requested tells the
+                # agent to skip persistence for the cancelled turn (no
+                # orphan rows; the bundled new turn persists everything).
                 if self._active_turn_task and not self._active_turn_task.done():
+                    self._interrupt_requested = True
+                    self._pending_prefix = self._current_turn_text or ""
                     self._active_turn_task.cancel()
                     await asyncio.gather(self._active_turn_task, return_exceptions=True)
+                    await self._send_json({"type": "interrupted"})
+
+                # Build the bundled text for this turn.
+                bundled_text = (
+                    f"{self._pending_prefix}\n{user_text}"
+                    if self._pending_prefix
+                    else user_text
+                )
+                self._pending_prefix = ""
+                self._interrupt_requested = False
+                self._current_turn_text = bundled_text
 
                 logger.info("Session '%s': received message.", self._session_id)
-                self._active_turn_task = asyncio.create_task(self._process_turn(user_text))
+                self._active_turn_task = asyncio.create_task(self._process_turn(bundled_text))
 
                 def _on_turn_done(task: asyncio.Task) -> None:
                     if self._active_turn_task is task:
                         self._active_turn_task = None
+                        self._current_turn_text = None
                     if not task.cancelled():
                         exc = task.exception()
                         if exc is not None and not isinstance(exc, asyncio.CancelledError):
@@ -646,6 +673,7 @@ class ChatSession:
                     self._context_description, self._activity_id,
                     prompt_directives=prompt_directives,
                     teacher_goal=teacher_goal,
+                    interrupt_check=lambda: self._interrupt_requested,
                 )
                 if closure_eligible:
                     async for chunk in stream:
@@ -856,10 +884,11 @@ class ChatSession:
                 "Session '%s': turn cancelled after %d accumulated chars.",
                 self._session_id, sum(len(c) for c in accumulated),
             )
-            # Partial save is best-effort — the agent's _stream_and_persist already
-            # handles persistence in its finally block, so we only call save_partial_response
-            # when the session-level accumulated buffer has content the agent didn't yet save.
-            if accumulated:
+            # On interrupt-and-bundle, the cancelled turn's text is carried
+            # forward by the conversation loop and re-persisted as part of
+            # the next bundled turn — skip the partial save so we don't
+            # leave an orphan [Interrupted] row.
+            if accumulated and not self._interrupt_requested:
                 try:
                     async with get_db_session() as db:
                         await self._agent.save_partial_response(
