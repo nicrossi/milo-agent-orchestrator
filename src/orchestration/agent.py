@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from pathlib import Path
-from typing import AsyncIterator, Dict, List, Optional
+from typing import AsyncIterator, Callable, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -110,6 +110,7 @@ class OrchestratorAgent:
         activity_id: Optional[str] = None,
         prompt_directives: Optional[List[str]] = None,
         teacher_goal: Optional[str] = None,
+        interrupt_check: Optional[Callable[[], bool]] = None,
     ) -> AsyncIterator[str]:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         # Note: Ownership is determined by chat_sessions, so we avoid bind_or_validate_session_owner.
@@ -117,8 +118,6 @@ class OrchestratorAgent:
         cross_chat_memory = await self.history_repo.get_recent_cross_session_memory(
             db, user_id, session_id, limit=12, activity_id=activity_id
         )
-        if query: # Only persist and query if user sends a message. Greeting uses empty query.
-            await self._persist_user_message(db, user_id, session_id, query)
 
         rag_chunks = (
             await self.rag_service.retrieve_context(
@@ -136,7 +135,8 @@ class OrchestratorAgent:
         real_query = query if query else f"Hi there! Initiate conversation based on the context."
 
         async for chunk in self._stream_and_persist(
-            db, user_id, session_id, real_query, context_chunks, history
+            db, user_id, session_id, real_query, query, context_chunks, history,
+            interrupt_check=interrupt_check,
         ):
             yield chunk
 
@@ -164,8 +164,10 @@ class OrchestratorAgent:
         user_id: str,
         session_id: str,
         query: str,
+        user_query: str,
         context_chunks: List[str],
         history: List[MessageDTO],
+        interrupt_check: Optional[Callable[[], bool]] = None,
     ) -> AsyncIterator[str]:
         collected: List[str] = []
         interrupted = False
@@ -176,10 +178,26 @@ class OrchestratorAgent:
                 yield chunk
         except asyncio.CancelledError:
             interrupted = True
-            logger.info("Session '%s': client disconnected mid-stream.", session_id)
+            logger.info("Session '%s': stream cancelled mid-flight.", session_id)
             raise
         finally:
-            await self._persist_model_response(db, user_id, session_id, collected, interrupted)
+            if interrupt_check is not None and interrupt_check():
+                # Interrupt-and-bundle path: the cancelled turn's text gets
+                # carried forward by the session and re-persisted as part of
+                # the next bundled turn. Skip persist here so we don't leave
+                # an orphan [Interrupted] row or a stale user-message row.
+                logger.info(
+                    "Session '%s': skipping persist — turn interrupted by new user msg.",
+                    session_id,
+                )
+            else:
+                # Persist user msg first (kept out of pre-stream persistence so
+                # an interrupted turn can leave zero rows). On disconnect
+                # mid-stream we still persist so the transcript reflects what
+                # the student sent.
+                if user_query:
+                    await self._persist_user_message(db, user_id, session_id, user_query)
+                await self._persist_model_response(db, user_id, session_id, collected, interrupted)
 
     async def save_partial_response(
         self, db: AsyncSession, user_id: str, session_id: str, content: str
