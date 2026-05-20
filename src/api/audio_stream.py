@@ -38,7 +38,7 @@ def voice_for_language(language: str) -> str:
 _SPANISH_MARKERS = re.compile(
     r"[¿¡]|\b("
     r"qué|está|por|para|con|los|las|una|este|esto|tú|sí|también|porque|pero|"
-    r"cómo|cuándo|dónde|hola|gracias|hacer|hacia|puedes|puedo|hola|sobre"
+    r"cómo|cuándo|dónde|hola|gracias|hacer|hacia|puedes|puedo|sobre"
     r")\b",
     re.IGNORECASE,
 )
@@ -95,6 +95,8 @@ async def wrap(
                 yield AudioSentence(seq=seq, mp3_bytes=mp3, voice=voice)
             except tts.TTSError as exc:
                 logger.info("TTS failed for sentence (silent degrade): %s", exc)
+            # seq still advances on TTS failure so the frontend can detect
+            # silently-dropped sentences as gaps in the sequence.
             seq += 1
 
     # Flush remaining buffer as one final sentence

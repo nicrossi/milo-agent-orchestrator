@@ -85,6 +85,8 @@ async def test_wrap_skips_audio_on_tts_failure_but_keeps_text():
     assert "".join(c.text for c in text_events) == "Good. boom. Fine."
     # Two of the three sentences succeed; the 'boom' one is silent
     assert len(audio_events) == 2
+    # When the middle sentence's TTS fails, seq still advances — frontend sees gap.
+    assert [e.seq for e in audio_events] == [0, 2]
 
 
 @pytest.mark.asyncio
