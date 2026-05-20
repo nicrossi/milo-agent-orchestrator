@@ -62,10 +62,10 @@ Follow these steps to run the project locally:
 3. **Start the Server**:
 
    ```bash
-   uvicorn src.main:app --port 3001
+   uvicorn src.main:app --port 8000
    ```
 
-The server will be available at `http://localhost:3001` (the frontend dev server uses `:3000`).
+The server will be available at `http://localhost:8000`. The frontend dev server runs on `:3000`, and the project's `.env.local` points `REACT_APP_API_BASE_URL` at `:8000`.
 Tables are created automatically on startup via the FastAPI lifespan hook.
 
 ---
