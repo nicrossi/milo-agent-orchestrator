@@ -470,6 +470,11 @@ class ChatSession:
 
             if ftype == "message":
                 user_text = (frame.get("text") or "").strip()
+                # Optional mode hint from client: "voice" routes to the
+                # faster/shorter model; anything else (including missing)
+                # falls back to text-mode defaults.
+                raw_mode = frame.get("mode")
+                mode = "voice" if isinstance(raw_mode, str) and raw_mode.lower() == "voice" else "text"
                 if not user_text:
                     await self._send_error("Cannot process an empty message.")
                     continue
@@ -496,8 +501,8 @@ class ChatSession:
                 self._interrupt_requested = False
                 self._current_turn_text = bundled_text
 
-                logger.info("Session '%s': received message.", self._session_id)
-                self._active_turn_task = asyncio.create_task(self._process_turn(bundled_text))
+                logger.info("Session '%s': received message (mode=%s).", self._session_id, mode)
+                self._active_turn_task = asyncio.create_task(self._process_turn(bundled_text, mode=mode))
 
                 def _on_turn_done(task: asyncio.Task) -> None:
                     if self._active_turn_task is task:
@@ -558,7 +563,7 @@ class ChatSession:
         except Exception:
             pass
 
-    async def _process_turn(self, user_text: str) -> None:
+    async def _process_turn(self, user_text: str, mode: str = "text") -> None:
         # Policy loop — 6 steps:
         # 1. Load history to derive turn count (completed exchange pairs).
         # 2. Evaluate policy (FSM transition + question selection + rules).
@@ -674,6 +679,7 @@ class ChatSession:
                     prompt_directives=prompt_directives,
                     teacher_goal=teacher_goal,
                     interrupt_check=lambda: self._interrupt_requested,
+                    mode=mode,
                 )
                 if closure_eligible:
                     async for chunk in stream:
@@ -687,6 +693,27 @@ class ChatSession:
                                 self._session_id,
                             )
                             return
+
+                        # Closure-eligible turns that DIDN'T fire the sentinel
+                        # are normal conversational responses — they still need
+                        # TTS audio in voice mode. Feed the buffered text into
+                        # audio_stream.wrap as a one-shot source and emit only
+                        # the AudioSentence events (text already sent above).
+                        async def _one_shot(text: str):
+                            yield text
+
+                        async for event in audio_stream.wrap(_one_shot(full_text)):
+                            if isinstance(event, audio_stream.AudioSentence):
+                                last_voice = event.voice
+                                last_audio_seq = event.seq
+                                if not await self._send_json(
+                                    _audio_frame(event.seq, event.mp3_bytes, event.voice)
+                                ):
+                                    logger.info(
+                                        "Session '%s': client dropped during closure audio - halting.",
+                                        self._session_id,
+                                    )
+                                    return
                     # When sentinel_detected, deliberately send NO chunks —
                     # the session_complete frame drives the UI.
                 else:

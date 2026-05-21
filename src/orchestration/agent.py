@@ -19,6 +19,17 @@ _FALLBACK_BASE_CONTEXT = (
     "Be warm, concise, and practical."
 )
 
+# Appended as a prompt directive when the student is in a voice session so
+# replies feel like a back-and-forth conversation, not a lecture: short,
+# conversational, single follow-up question. Pairs with a smaller
+# max_output_tokens in the LLM adapter to keep first-audio latency low.
+_VOICE_STYLE_DIRECTIVE = (
+    "Response style for THIS turn — the student is speaking, not typing: "
+    "keep your reply to 1–2 short sentences, conversational tone, no bullet "
+    "lists or headings, end with at most one open follow-up question. "
+    "Avoid long preambles or restating what the student just said."
+)
+
 
 class OrchestratorAgent:
     """
@@ -57,23 +68,32 @@ class OrchestratorAgent:
             return ""
         return "\n".join(lines)
 
-    def _compose_context(
+    def _static_prefix(
         self,
-        rag_chunks: List[str],
-        cross_chat_memory: Optional[List[MessageDTO]] = None,
         context_description: Optional[str] = None,
-        prompt_directives: Optional[List[str]] = None,
         teacher_goal: Optional[str] = None,
-    ) -> List[str]:
-        # Always include Milo identity + behavior instructions.
-        chunks: List[str] = [self.base_context]
+    ) -> str:
+        # Session-stable prefix: Milo persona + activity context. Eligible for
+        # Gemini context caching so the LLM doesn't re-process it every turn.
+        parts: List[str] = [self.base_context]
         if context_description:
-            chunks.append(f"The student is reflecting on: {context_description}")
+            parts.append(f"The student is reflecting on: {context_description}")
         if teacher_goal:
-            chunks.append(
+            parts.append(
                 "Activity pedagogical goal (what the student should ultimately reach): "
                 f"{teacher_goal}"
             )
+        return "\n\n".join(parts)
+
+    def _dynamic_chunks(
+        self,
+        rag_chunks: List[str],
+        cross_chat_memory: Optional[List[MessageDTO]] = None,
+        prompt_directives: Optional[List[str]] = None,
+    ) -> List[str]:
+        # Per-turn chunks — never cached. Memory rolls, RAG retrieves fresh,
+        # directives come from the policy engine each turn.
+        chunks: List[str] = []
         memory_block = self._format_memory_block(cross_chat_memory or [])
         if memory_block:
             chunks.append(memory_block)
@@ -82,6 +102,22 @@ class OrchestratorAgent:
             # Injected last for salience; populated by PolicyEngine.evaluate()
             chunks.append("\n".join(prompt_directives))
         return chunks
+
+    def _compose_context(
+        self,
+        rag_chunks: List[str],
+        cross_chat_memory: Optional[List[MessageDTO]] = None,
+        context_description: Optional[str] = None,
+        prompt_directives: Optional[List[str]] = None,
+        teacher_goal: Optional[str] = None,
+    ) -> List[str]:
+        # Backwards-compatible composition (non-streaming path). Streaming path
+        # uses _static_prefix + _dynamic_chunks directly so the static piece
+        # can be sent via Gemini's cached_content.
+        return [
+            self._static_prefix(context_description, teacher_goal),
+            *self._dynamic_chunks(rag_chunks, cross_chat_memory, prompt_directives),
+        ]
 
     async def process_query(
         self,
@@ -111,6 +147,7 @@ class OrchestratorAgent:
         prompt_directives: Optional[List[str]] = None,
         teacher_goal: Optional[str] = None,
         interrupt_check: Optional[Callable[[], bool]] = None,
+        mode: str = "text",
     ) -> AsyncIterator[str]:
         """Session-aware RAG + LLM streaming pipeline with user isolation."""
         # Note: Ownership is determined by chat_sessions, so we avoid bind_or_validate_session_owner.
@@ -126,17 +163,26 @@ class OrchestratorAgent:
             if query
             else []
         )
-        context_chunks = self._compose_context(
-            rag_chunks, cross_chat_memory, context_description,
-            prompt_directives=prompt_directives or [],
-            teacher_goal=teacher_goal,
+        is_voice = mode == "voice"
+        # In voice mode, prepend a tone directive so replies stay short and
+        # conversational. Goes through the existing prompt_directives channel
+        # so the static prefix (cached) doesn't need to change.
+        effective_directives = list(prompt_directives or [])
+        if is_voice:
+            effective_directives.insert(0, _VOICE_STYLE_DIRECTIVE)
+
+        static_prefix = self._static_prefix(context_description, teacher_goal)
+        dynamic_chunks = self._dynamic_chunks(
+            rag_chunks, cross_chat_memory, effective_directives,
         )
 
         real_query = query if query else f"Hi there! Initiate conversation based on the context."
 
         async for chunk in self._stream_and_persist(
-            db, user_id, session_id, real_query, query, context_chunks, history,
+            db, user_id, session_id, real_query, query, dynamic_chunks, history,
             interrupt_check=interrupt_check,
+            static_prefix=static_prefix,
+            is_voice=is_voice,
         ):
             yield chunk
 
@@ -168,12 +214,18 @@ class OrchestratorAgent:
         context_chunks: List[str],
         history: List[MessageDTO],
         interrupt_check: Optional[Callable[[], bool]] = None,
+        static_prefix: Optional[str] = None,
+        is_voice: bool = False,
     ) -> AsyncIterator[str]:
         collected: List[str] = []
         interrupted = False
 
         try:
-            async for chunk in self.llm_adapter.generate_answer_stream(query, context_chunks, history):
+            async for chunk in self.llm_adapter.generate_answer_stream(
+                query, context_chunks, history,
+                static_prefix=static_prefix,
+                is_voice=is_voice,
+            ):
                 collected.append(chunk)
                 yield chunk
         except asyncio.CancelledError:

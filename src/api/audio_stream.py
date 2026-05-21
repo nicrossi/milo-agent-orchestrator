@@ -25,7 +25,7 @@ class AudioSentence:
 AudioStreamEvent = Union[TextChunk, AudioSentence]
 
 
-_VOICE_ES_DEFAULT = "es-MX-DaliaNeural"
+_VOICE_ES_DEFAULT = "es-US-PalomaNeural"
 _VOICE_EN_DEFAULT = "en-US-AriaNeural"
 
 
@@ -35,21 +35,36 @@ def voice_for_language(language: str) -> str:
     return os.getenv("EDGE_TTS_VOICE_EN", _VOICE_EN_DEFAULT)
 
 
+# Spanish-only characters: ñ + accented vowels. Any occurrence is a strong
+# signal even if no stopword matches (English borrows these only in proper
+# nouns, which the LLM rarely emits in mid-sentence).
+_SPANISH_CHARS = re.compile(r"[ñáéíóúüÑÁÉÍÓÚÜ]")
+
 _SPANISH_MARKERS = re.compile(
     r"[¿¡]|\b("
-    r"qué|está|por|para|con|los|las|una|este|esto|tú|sí|también|porque|pero|"
-    r"cómo|cuándo|dónde|hola|gracias|hacer|hacia|puedes|puedo|sobre"
+    r"qué|está|estás|estoy|estamos|están|"
+    r"por|para|con|los|las|una|uno|este|esto|esa|ese|eso|"
+    r"tú|sí|también|porque|pero|"
+    r"cómo|cuándo|dónde|donde|cuando|como|"
+    r"hola|gracias|chau|adiós|"
+    r"hacer|hacia|puedes|puedo|sobre|"
+    r"vamos|voy|soy|son|ser|"
+    r"ahora|aquí|allí|muy|más|sin|hasta|"
+    r"todo|todos|todas|toda|nada|algo|"
+    r"vos|usted|nosotros|ustedes|ellos|ellas|"
+    r"bueno|claro|bien"
     r")\b",
     re.IGNORECASE,
 )
 
 
 def detect_language(text: str) -> str:
-    """Cheap heuristic: Spanish if inverted punctuation or common Spanish
-    stopwords appear in the first ~120 chars. Otherwise English.
+    """Cheap heuristic: Spanish if Spanish-only chars (ñ, accented vowels),
+    inverted punctuation, or common Spanish stopwords appear in the first
+    ~120 chars. Otherwise English.
     """
     sample = text[:120]
-    if _SPANISH_MARKERS.search(sample):
+    if _SPANISH_CHARS.search(sample) or _SPANISH_MARKERS.search(sample):
         return "es"
     return "en"
 

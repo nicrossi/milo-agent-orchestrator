@@ -3,6 +3,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _force_whisper_provider(monkeypatch):
+    # These tests target the Whisper code path; pin the env so a developer's
+    # local .env (which may set STT_PROVIDER=gemini) doesn't reroute us.
+    monkeypatch.setenv("STT_PROVIDER", "whisper")
+
+
 @pytest.mark.asyncio
 async def test_transcribe_returns_text_from_whisper():
     from src.services.stt import transcribe

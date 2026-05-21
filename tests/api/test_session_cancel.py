@@ -40,7 +40,7 @@ async def test_session_cancel_turn_cancels_in_flight_process_turn(monkeypatch):
     process_called = asyncio.Event()
     process_cancelled = asyncio.Event()
 
-    async def slow_process_turn(self, text):
+    async def slow_process_turn(self, text, mode="text"):
         process_called.set()
         try:
             await asyncio.sleep(10)  # would hang forever
@@ -104,7 +104,7 @@ async def test_session_accepts_legacy_plain_text_as_message(monkeypatch):
 
     seen_text: list[str] = []
 
-    async def capture_process_turn(self, text):
+    async def capture_process_turn(self, text, mode="text"):
         seen_text.append(text)
 
     monkeypatch.setattr(ChatSession, "_process_turn", capture_process_turn)
