@@ -4,6 +4,26 @@ Issues presigned PUT URLs (frontend uploads directly to S3), HEAD-checks
 objects after upload, and deletes objects on file removal. Embedding
 ingestion is handled separately by the milo-ingest worker, which reacts to
 S3 event notifications via SQS — see milo-ingest/src/main.py.
+
+KEY PREFIXING
+-------------
+When ``S3_KEY_PREFIX`` is set (e.g. ``milo/``) every object operation in
+this module transparently prepends it to the caller-supplied key. This lets
+us share a bucket with other apps without colliding on key names:
+
+    DB row.s3_key  =  "activities/<id>/<file_id>/file.pdf"   (logical)
+    S3 object      =  "milo/activities/<id>/<file_id>/file.pdf"
+
+The prefix is purely an S3-storage concern — the DB still stores the
+unprefixed logical key, and callers continue to pass logical keys here.
+Unset prefix = no change, preserves backwards compatibility with the
+LocalStack/dev setup and existing deployments. The trailing slash is
+normalised; ``milo``, ``milo/``, and ``/milo/`` all behave identically.
+
+If you enable a prefix and you also use the milo-ingest worker, make sure
+the ingest worker strips the same prefix before looking up the DB row by
+key (or use an S3 event-notification filter scoped to the prefix so the
+worker only sees events it owns).
 """
 
 import logging
@@ -23,6 +43,30 @@ def _bucket() -> str:
     if not bucket:
         raise RuntimeError("S3_ACTIVITY_FILES_BUCKET is not configured")
     return bucket
+
+
+def _key_prefix() -> str:
+    """Normalised S3 key prefix. Empty string when unset (no prefixing)."""
+    raw = os.getenv("S3_KEY_PREFIX", "")
+    if not raw:
+        return ""
+    # Strip leading slashes (S3 keys never start with /) and ensure exactly
+    # one trailing slash so concatenation gives a clean "prefix/key".
+    return raw.lstrip("/").rstrip("/") + "/"
+
+
+def _full_key(key: str) -> str:
+    """Apply the optional ``S3_KEY_PREFIX`` to a logical key.
+
+    Idempotent: if the caller has already passed a prefixed key (e.g. from an
+    S3 event that already carries the full key), we don't double-prefix it.
+    """
+    prefix = _key_prefix()
+    if not prefix:
+        return key
+    if key.startswith(prefix):
+        return key
+    return f"{prefix}{key.lstrip('/')}"
 
 
 @lru_cache(maxsize=1)
@@ -54,7 +98,7 @@ def generate_presigned_put(
         "put_object",
         Params={
             "Bucket": _bucket(),
-            "Key": key,
+            "Key": _full_key(key),
             "ContentType": content_type,
             "ContentLength": content_length,
             "Metadata": dict(metadata),
@@ -67,7 +111,7 @@ def head_object(key: str) -> dict | None:
     """Return the head_object response, or None if the object does not exist."""
     client = get_s3_client()
     try:
-        return client.head_object(Bucket=_bucket(), Key=key)
+        return client.head_object(Bucket=_bucket(), Key=_full_key(key))
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code")
         if code in ("404", "NoSuchKey", "NotFound"):
@@ -80,7 +124,7 @@ def delete_object(key: str) -> None:
     SQS queue, which removes the corresponding embeddings."""
     client = get_s3_client()
     try:
-        client.delete_object(Bucket=_bucket(), Key=key)
+        client.delete_object(Bucket=_bucket(), Key=_full_key(key))
     except ClientError:
-        logger.exception("Failed to delete S3 object %s", key)
+        logger.exception("Failed to delete S3 object %s", _full_key(key))
         raise
