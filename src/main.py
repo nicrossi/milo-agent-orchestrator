@@ -12,8 +12,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 print("BOOT[3/6]: fastapi imported", flush=True)
 
-from src.api.routers import activities, admin, audio, chat, courses, me, policy, students
-print("BOOT[4/6]: routers imported", flush=True)
+from src.api.routers import activities; print("BOOT[4a/6]: activities", flush=True)
+from src.api.routers import admin;      print("BOOT[4b/6]: admin", flush=True)
+from src.api.routers import audio;      print("BOOT[4c/6]: audio", flush=True)
+from src.api.routers import chat;       print("BOOT[4d/6]: chat", flush=True)
+from src.api.routers import courses;    print("BOOT[4e/6]: courses", flush=True)
+from src.api.routers import me;         print("BOOT[4f/6]: me", flush=True)
+from src.api.routers import policy;     print("BOOT[4g/6]: policy", flush=True)
+from src.api.routers import students;   print("BOOT[4h/6]: students", flush=True)
+print("BOOT[4/6]: all routers imported", flush=True)
 
 from src.core.database import init_db, close_db
 from src.services.rag import IntegratedRAGService
@@ -83,10 +90,19 @@ allowed_origins = [
     "http://localhost:3001",
     "http://127.0.0.1:3001",
 ]
+# Additional comma-separated origins from env — for Vercel / custom domains.
+# Example: ALLOWED_ORIGINS=https://milo.vercel.app,https://milo-foo.vercel.app
+extra_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+if extra_origins:
+    allowed_origins.extend([o.strip() for o in extra_origins.split(",") if o.strip()])
+# Optional: match all Vercel preview deploys for a project via regex.
+# Set ALLOWED_ORIGIN_REGEX=https://your-project-.*\.vercel\.app
+allow_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX") or None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
