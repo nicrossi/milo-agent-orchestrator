@@ -4,7 +4,12 @@ import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 from typing import List
 
-from sentence_transformers import SentenceTransformer
+# NOTE: sentence_transformers pulls in torch (~200MB) + transformers and an
+# embedding model (~50-500MB). Importing it at module load makes the main
+# FastAPI process exceed Render's 512MB free-tier limit before it can bind a
+# port. We defer the import to the worker initializer below, which only runs
+# when IntegratedRAGService.start() is called — and start() is gated behind
+# the RAG_ENABLED env var in main.py.
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,12 +17,15 @@ logger = logging.getLogger("milo-orchestrator.rag")
 
 # These variables only exist inside the isolated memory of the background
 # worker process — never in the main FastAPI process.
-_worker_model: SentenceTransformer | None = None
+_worker_model = None  # type: ignore[var-annotated]
 
 
 def _init_worker_model(model_id: str) -> None:
-    """Initializer called exactly ONCE per worker process at pool startup."""
+    """Initializer called exactly ONCE per worker process at pool startup.
+    The heavy sentence_transformers import lives here so it only loads in the
+    forked worker process — never in the parent FastAPI process."""
     global _worker_model
+    from sentence_transformers import SentenceTransformer  # lazy import
     _worker_model = SentenceTransformer(model_id)
     logging.info("Worker process initialized with model: %s", model_id)
 
@@ -126,9 +134,13 @@ class IntegratedRAGService:
         user_id: str | None = None,
         activity_id: str | None = None,
     ) -> List[str]:
-        """Main entry point called by the OrchestratorAgent."""
+        """Main entry point called by the OrchestratorAgent. Returns an empty
+        list when the embedding pool isn't running (e.g. when RAG_ENABLED=false
+        on memory-constrained deploys). Callers must already tolerate an empty
+        result — there can simply be no relevant embeddings for a given query."""
         if not self._pool:
-            raise RuntimeError("RAG Service pool is not running. Call start() first.")
+            logger.debug("RAG pool not running — returning empty context.")
+            return []
 
         loop = asyncio.get_running_loop()
 

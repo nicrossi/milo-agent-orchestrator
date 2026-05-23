@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -21,6 +22,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("milo-orchestrator.main")
 
+# RAG is gated by env var so memory-constrained deploys (e.g. Render free tier
+# at 512MB) can skip booting the embedding model + ProcessPoolExecutor entirely.
+# When disabled, retrieve_context() returns [] — chat still works, just without
+# document-grounded context. Defaults to true to preserve existing dev behavior.
+RAG_ENABLED = os.getenv("RAG_ENABLED", "true").lower() == "true"
+
 # Single application-wide RAG service instance shared across all requests.
 rag_service = IntegratedRAGService()
 
@@ -30,9 +37,12 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Database ready.")
 
-    logger.info("Starting up — booting RAG process pool…")
-    rag_service.start()
-    logger.info("RAG service ready.")
+    if RAG_ENABLED:
+        logger.info("Starting up — booting RAG process pool…")
+        rag_service.start()
+        logger.info("RAG service ready.")
+    else:
+        logger.info("Starting up — RAG disabled (RAG_ENABLED=false). Skipping embedding pool.")
 
     logger.info("Starting up — background evaluation worker…")
     await start_worker()
@@ -47,9 +57,10 @@ async def lifespan(app: FastAPI):
 
     logger.info("Shutting down — background evaluation worker…")
     await stop_worker()
-    
-    logger.info("Shutting down — closing RAG process pool…")
-    rag_service.stop()
+
+    if RAG_ENABLED:
+        logger.info("Shutting down — closing RAG process pool…")
+        rag_service.stop()
     logger.info("Shutting down — closing database…")
     await close_db()
 
