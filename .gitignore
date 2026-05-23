@@ -220,3 +220,8 @@ __marimo__/
 
 # Debug transcripts
 debug_transcripts/
+
+# GCP / Firebase service-account credentials — never commit
+milo-*.json
+*-firebase-adminsdk-*.json
+*service-account*.json
