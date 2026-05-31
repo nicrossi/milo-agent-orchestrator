@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import os
+import ssl
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -28,6 +30,37 @@ def _ensure_async_url(url: str | None) -> str:
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
     return url
+
+
+def _split_ssl(url: str) -> tuple[str, dict]:
+    """Translate libpq-style SSL config into asyncpg connect_args.
+
+    asyncpg rejects the libpq `sslmode` query arg (it uses an `ssl` kwarg), so we
+    strip it from the URL and build an SSLContext. Managed Postgres (AWS RDS) sits
+    behind TLS, so this is required for remote connections. `DB_SSL` overrides any
+    `sslmode` in the URL; `DB_SSL_ROOT_CERT` points at a CA bundle for verify-full.
+    """
+    parts = urlsplit(url)
+    query = parse_qs(parts.query)
+    sslmode = os.getenv("DB_SSL", query.pop("sslmode", [None])[0])
+    clean = urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urlencode({k: v[0] for k, v in query.items()}),
+        parts.fragment,
+    ))
+    if not sslmode or sslmode in ("disable", "allow", "prefer"):
+        return clean, {}
+
+    root_cert = os.getenv("DB_SSL_ROOT_CERT")
+    ctx = ssl.create_default_context(cafile=root_cert)
+    if sslmode in ("require", "verify-ca") and not root_cert:
+        # `require`/`verify-ca` encrypt but don't pin the server hostname/CA the way
+        # `verify-full` does — relax verification so RDS's Amazon CA isn't required.
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return clean, {"ssl": ctx}
 
 
 @asynccontextmanager  # type: ignore[misc]
@@ -58,7 +91,7 @@ async def init_db() -> None:
     """Create the engine, session factory, and all tables."""
     global engine, async_session_factory
 
-    db_url = _ensure_async_url(os.getenv("DATABASE_URL"))
+    db_url, connect_args = _split_ssl(_ensure_async_url(os.getenv("DATABASE_URL")))
 
     pool_size = int(os.getenv("DB_POOL_SIZE", "5"))
     max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "10"))
@@ -68,6 +101,7 @@ async def init_db() -> None:
         echo=False,
         pool_size=pool_size,
         max_overflow=max_overflow,
+        connect_args=connect_args,
     )
 
     async_session_factory = async_sessionmaker(

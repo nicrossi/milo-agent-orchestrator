@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -22,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger("milo-orchestrator.main")
 
 # Single application-wide RAG service instance shared across all requests.
-rag_service = IntegratedRAGService()
+rag_service = IntegratedRAGService(max_workers=int(os.getenv("RAG_WORKERS", "1")))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,11 +57,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Milo Orchestrator API", lifespan=lifespan)
 
+# Comma-separated origins via ALLOWED_ORIGINS; defaults to local dev ports.
+_default_origins = (
+    "http://localhost:3000,http://127.0.0.1:3000,"
+    "http://localhost:3001,http://127.0.0.1:3001"
+)
 allowed_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
+    o.strip()
+    for o in os.getenv("ALLOWED_ORIGINS", _default_origins).split(",")
+    if o.strip()
 ]
 
 app.add_middleware(

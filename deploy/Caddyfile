@@ -1,0 +1,16 @@
+# Auto-HTTPS reverse proxy + static GUI host.
+# {$DROPLET_IP} is injected from the environment (see docker-compose.yml).
+# sslip.io maps <name>.<ip>.sslip.io -> <ip>, so Caddy gets real Let's Encrypt certs.
+
+# Orchestrator API (Caddy proxies WebSocket upgrades transparently).
+api.{$DROPLET_IP}.sslip.io {
+    reverse_proxy orchestrator:8000
+}
+
+# Milo GUI — static CRA build mounted into the caddy container at /srv/gui.
+app.{$DROPLET_IP}.sslip.io {
+    root * /srv/gui
+    encode gzip
+    try_files {path} /index.html   # SPA client-side routing fallback
+    file_server
+}

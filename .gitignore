@@ -203,6 +203,10 @@ cython_debug/
 # Firebase Admin service account keys
 *firebase-adminsdk*.json
 *service-account*.json
+
+# Deployment secrets (real env file + mounted credentials; keep .example only)
+deploy/orchestrator.env
+deploy/secrets/
 .cursorignore
 .cursorindexingignore
 
@@ -220,3 +224,6 @@ __marimo__/
 
 # Debug transcripts
 debug_transcripts/
+
+# Built GUI static assets (produced by deploy/build-gui.sh)
+deploy/gui-build/

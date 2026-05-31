@@ -1,0 +1,52 @@
+# DigitalOcean App Platform spec for the Milo GUI (Create React App static site).
+# Create the app with:
+#   doctl apps create --spec deploy/app-platform-gui.yaml
+# Then update it after edits with:
+#   doctl apps update <APP_ID> --spec deploy/app-platform-gui.yaml
+#
+# CRA bakes REACT_APP_* at BUILD time, so these are build-scoped envs. After the
+# orchestrator Droplet has its reserved IP, replace 146.190.197.190 below.
+# The Firebase keys are public web config (safe in a client bundle).
+name: milo-gui
+region: nyc
+static_sites:
+  - name: gui
+    github:
+      repo: intilauberer/milo
+      branch: master
+      deploy_on_push: true
+    source_dir: /
+    build_command: npm ci && npm run build
+    output_dir: build
+    catchall_document: index.html       # SPA client-side routing fallback
+    envs:
+      - key: REACT_APP_API_BASE_URL
+        scope: BUILD_TIME
+        value: https://api.146.190.197.190.sslip.io
+      - key: REACT_APP_WS_BASE_URL
+        scope: BUILD_TIME
+        value: wss://api.146.190.197.190.sslip.io
+      - key: REACT_APP_UPLOAD_API_URL
+        scope: BUILD_TIME
+        value: https://api.146.190.197.190.sslip.io
+      - key: REACT_APP_AUTH_PROVIDER
+        scope: BUILD_TIME
+        value: firebase
+      - key: REACT_APP_FIREBASE_API_KEY
+        scope: BUILD_TIME
+        value: AIzaSyDC6IcO1nArB0TQK4vZvUAKeswiLfc6JCs
+      - key: REACT_APP_FIREBASE_AUTH_DOMAIN
+        scope: BUILD_TIME
+        value: milo-auth-e1505.firebaseapp.com
+      - key: REACT_APP_FIREBASE_PROJECT_ID
+        scope: BUILD_TIME
+        value: milo-auth-e1505
+      - key: REACT_APP_FIREBASE_APP_ID
+        scope: BUILD_TIME
+        value: 1:355820233071:web:f2866f404c27dafaa1889a
+      - key: REACT_APP_FIREBASE_MESSAGING_SENDER_ID
+        scope: BUILD_TIME
+        value: "355820233071"
+      - key: REACT_APP_FIREBASE_STORAGE_BUCKET
+        scope: BUILD_TIME
+        value: milo-auth-e1505.firebasestorage.app
