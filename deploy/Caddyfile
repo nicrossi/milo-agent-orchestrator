@@ -8,7 +8,8 @@ api.{$DROPLET_IP}.sslip.io {
 }
 
 # Milo GUI — static CRA build mounted into the caddy container at /srv/gui.
-app.{$DROPLET_IP}.sslip.io {
+# Served on the No-IP hostname plus the legacy sslip.io name (both get LE certs).
+milo-tutor.ddns.net, app.{$DROPLET_IP}.sslip.io {
     root * /srv/gui
     encode gzip
     try_files {path} /index.html   # SPA client-side routing fallback
