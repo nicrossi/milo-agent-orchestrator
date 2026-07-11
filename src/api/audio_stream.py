@@ -93,9 +93,15 @@ def _extract_complete_sentences(buffer: str) -> tuple[list[str], str]:
 
 async def wrap(
     llm_stream: AsyncIterator[str],
+    voice: Optional[str] = None,
 ) -> AsyncIterator[AudioStreamEvent]:
+    """Wrap an LLM text stream, yielding TextChunk and AudioSentence events.
+
+    If `voice` is provided, language detection is skipped and every sentence
+    is synthesized with it (session-level voice lock). Otherwise the first
+    sentence's detected language picks the voice for this call.
+    """
     buffer = ""
-    voice: Optional[str] = None
     seq = 0
 
     async for chunk in llm_stream:

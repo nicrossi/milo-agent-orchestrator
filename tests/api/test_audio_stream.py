@@ -66,6 +66,50 @@ async def test_wrap_locks_voice_to_first_sentence_language():
 
 
 @pytest.mark.asyncio
+async def test_wrap_uses_pre_locked_voice_and_skips_detection():
+    from src.api.audio_stream import AudioSentence, wrap
+
+    captured_calls = []
+
+    async def fake_synth(text, voice):
+        captured_calls.append((text, voice))
+        return b"x"
+
+    with patch("src.api.audio_stream.tts.synthesize", new=fake_synth), patch(
+        "src.api.audio_stream.detect_language"
+    ) as detect:
+        events = []
+        # English text, but the session already locked the Spanish voice.
+        async for ev in wrap(
+            _gen(["I am fine. ", "Great."]), voice="es-US-PalomaNeural"
+        ):
+            events.append(ev)
+
+    audio_events = [e for e in events if isinstance(e, AudioSentence)]
+    assert len(audio_events) == 2
+    assert all(e.voice == "es-US-PalomaNeural" for e in audio_events)
+    assert all(voice == "es-US-PalomaNeural" for _, voice in captured_calls)
+    detect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_wrap_pre_locked_voice_applies_to_tail_flush():
+    from src.api.audio_stream import AudioSentence, wrap
+
+    async def fake_synth(text, voice):
+        return b"x"
+
+    with patch("src.api.audio_stream.tts.synthesize", new=fake_synth):
+        events = []
+        async for ev in wrap(_gen(["Hola sin punto"]), voice="en-US-AriaNeural"):
+            events.append(ev)
+
+    audio_events = [e for e in events if isinstance(e, AudioSentence)]
+    assert len(audio_events) == 1
+    assert audio_events[0].voice == "en-US-AriaNeural"
+
+
+@pytest.mark.asyncio
 async def test_wrap_skips_audio_on_tts_failure_but_keeps_text():
     from src.api.audio_stream import AudioSentence, TextChunk, wrap
     from src.services.tts import TTSError

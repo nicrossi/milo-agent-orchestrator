@@ -34,7 +34,7 @@ Adds a full voice loop to Milo: students can speak their questions (push-to-talk
 | 5 | Transport | Base64 MP3 inside JSON WebSocket frames |
 | 6 | Persistence | Ephemeral — no audio storage |
 | 7 | Interceptor corrections in voice | Synthesize the appended correction as one final audio sentence |
-| 8 | Voice picker | Two fixed voices (one Spanish, one English); locked per turn |
+| 8 | Voice picker | Two fixed voices (one Spanish, one English); locked for the whole voice session (first response's detected language) |
 | 9 | Whisper language hint | Hint from prior assistant message; autodetect on first turn |
 | 10 | Barge-in | Cancel + interrupt mid-stream via new WS `cancel_turn` frame |
 | 11 | TTS failure | One retry (~500 ms), then silent degrade for that sentence |
@@ -66,7 +66,7 @@ Adds a full voice loop to Milo: students can speak their questions (push-to-talk
                                                          api/audio_stream.py
                                                          (wraps LLM stream,
                                                           splits sentences,
-                                                          locks voice per turn)
+                                                          locks voice per session)
                                                               │
                                                               ├─► services/tts.py ─► EdgeTTS
                                                               │
@@ -98,7 +98,7 @@ Adds a full voice loop to Milo: students can speak their questions (push-to-talk
 **`src/api/audio_stream.py`** — wraps an `AsyncIterator[str]` (the LLM stream) and yields `AudioStreamEvent` items: `TextChunk(text)` or `AudioSentence(seq, mp3_bytes, voice)`.
 
 - Sentence-splitting **reuses** `split_sentences()` from [open_endedness_classifier.py:88](../../src/policy/interceptors/open_endedness_classifier.py#L88). Does not fork; if decimals/abbreviations matter for TTS, the shared splitter gets improved (and the interceptor's contract benefits too).
-- Voice lock: first sentence's detected language picks the voice; remaining sentences in the same turn use the same voice even on mid-response code-switching.
+- Voice lock: the first turn's first sentence picks the voice via language detection; `ChatSession` persists it (`self._voice`) and passes it into `audio_stream.wrap(voice=...)` on every subsequent turn, so all responses in the session keep one voice/accent even when the reply language changes across turns.
 - Concurrent: when a sentence boundary is detected, TTS fires while LLM keeps streaming.
 - Cancellation: respects an `asyncio.CancelScope` so the WS handler can drop everything on barge-in (Q10).
 
@@ -135,7 +135,7 @@ Adds a full voice loop to Milo: students can speak their questions (push-to-talk
 6. Frontend sends `text` via the existing WS path.
 7. Backend agent runs; LLM stream begins.
 8. `audio_stream.wrap()` splits the stream into sentences as they arrive.
-9. Per sentence: language detected → voice chosen (locked after first sentence) → TTS synth → base64 → `audio_sentence` WS frame.
+9. Per sentence: voice chosen on the session's first turn (language detected on its first sentence) and reused for every later turn → TTS synth → base64 → `audio_sentence` WS frame.
 10. Frontend renders text chunks AND queues MP3 sentences for sequential playback.
 11. LLM stream ends. Policy interceptor may append a correction → synthesized as one final audio sentence → emitted.
 12. `done` frame sent.
@@ -156,7 +156,7 @@ Adds a full voice loop to Milo: students can speak their questions (push-to-talk
 **Backend unit:**
 
 - `audio_stream.wrap()` — given a fixed token sequence, asserts correct sentence boundaries via the real `split_sentences()`.
-- `audio_stream.wrap()` — voice lock holds across mid-response code-switching.
+- `audio_stream.wrap()` — voice lock holds across mid-response code-switching; a pre-locked `voice` argument skips detection entirely (session lock).
 - Cancellation — `asyncio.CancelScope` drops in-flight TTS calls cleanly.
 - `tts.synthesize()` — retry-once behavior via mocked `edge-tts`.
 - `stt.transcribe()` — `language_hint` propagation via mocked OpenAI client.

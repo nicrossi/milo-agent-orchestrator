@@ -3,12 +3,48 @@ from src.policy.signals.extractors import (
     extract_attempt_presence,
     extract_confusion_keywords,
     extract_direct_answer_request,
+    extract_done_signal,
     extract_hedging,
     extract_latency_z,
     extract_message_length_z,
     extract_procedural_request,
     extract_revision_markers,
 )
+
+
+# --- done_signal ---
+
+def test_done_signal_detects_ya_hicimos():
+    # From the ecosystem transcript: "lo cual eso ya hicimos y nos ayudó..."
+    assert extract_done_signal("eso ya hicimos y nos ayudó a poner en evidencia") is True
+
+
+def test_done_signal_detects_no_tiene_que_ver():
+    assert extract_done_signal("eso ya no tiene que ver con lo que venimos hablando") is True
+
+
+def test_done_signal_detects_el_punto_es():
+    assert extract_done_signal("creo que el punto es entender por qué no se adaptan") is True
+
+
+def test_done_signal_detects_english():
+    assert extract_done_signal("we already covered that") is True
+    assert extract_done_signal("that's off topic") is True
+    assert extract_done_signal("I already answered that") is True
+
+
+def test_done_signal_false_on_ordinary_reasoning():
+    # The cow-example turn is substantive reasoning, not a done cue.
+    cow = (
+        "una vaca tiene un sistema digestivo muy particular y su dentadura "
+        "es plana, pensada para masticar pastura, todo lo contrario a un carnívoro"
+    )
+    assert extract_done_signal(cow) is False
+
+
+def test_done_signal_false_on_empty():
+    assert extract_done_signal("") is False
+    assert extract_done_signal("   ") is False
 
 
 # --- procedural_request ---

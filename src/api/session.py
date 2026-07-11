@@ -47,6 +47,14 @@ logger = logging.getLogger("milo-orchestrator.session")
 _IDLE_TIMEOUT_SECONDS = 3600.0
 _policy_engine = PolicyEngine()  # stateless singleton — shared across all sessions
 
+# Deterministic closing message spoken/shown instead of the LLM's (occasionally
+# noisy) closure text when the closure sentinel fires. Spanish to match the
+# product language.
+_CLOSURE_FAREWELL = (
+    "¡Muy buen trabajo con tu reflexión de hoy! Terminamos la actividad. "
+    "¡Hasta la próxima!"
+)
+
 
 def _env_flag(name: str, default: bool = True) -> bool:
     value = os.getenv(name)
@@ -136,6 +144,11 @@ class ChatSession:
         # speculative re-greeting that would otherwise overwrite the resumed
         # context for the student.
         self._needs_greeting: bool = True
+        # TTS voice locked for the whole WebSocket session: set from the first
+        # turn's first synthesized sentence, then passed into audio_stream.wrap
+        # on every later turn so the accent stays consistent even if the reply
+        # language changes.
+        self._voice: Optional[str] = None
 
     async def run(self) -> None:
         """Main entry point for the WebSocket handler."""
@@ -432,14 +445,14 @@ class ChatSession:
     async def _conversation_loop(self) -> None:
         while True:
             if self._should_close:
-                # The previous turn ended with the LLM's closure sentinel.
-                # Hold the WebSocket open for a moment so the client receives
-                # the session_complete frame; then exit and let _wrap_up_session
-                # run via the finally block.
+                # The previous turn ended with the LLM's closure sentinel;
+                # that path already sent session_complete and closed the WS.
+                # Exit and let _wrap_up_session run via the finally block.
                 logger.info(
                     "Session '%s': loop exiting after LLM closure.",
                     self._session_id,
                 )
+                await self._drain_active_turn()
                 break
 
             frame = await self._receive_frame()
@@ -448,6 +461,17 @@ class ChatSession:
                 if self._active_turn_task and not self._active_turn_task.done():
                     self._active_turn_task.cancel()
                     await asyncio.gather(self._active_turn_task, return_exceptions=True)
+                break
+
+            if self._should_close:
+                # Finalization raced an inbound frame: the closing turn set
+                # _should_close while we were parked in receive. Ignore the
+                # frame — never spawn a new turn on a finalized session.
+                logger.info(
+                    "Session '%s': ignoring %r frame after finalization.",
+                    self._session_id, frame.get("type"),
+                )
+                await self._drain_active_turn()
                 break
 
             ftype = frame.get("type")
@@ -521,6 +545,14 @@ class ChatSession:
                 continue
 
             await self._send_error(f"Unknown frame type: {ftype!r}")
+
+    async def _drain_active_turn(self) -> None:
+        """Wait for the in-flight turn (if any) to finish so _wrap_up_session
+        never snapshots policy state mid-write. The closing turn sets
+        _should_close as one of its last actions, so this is near-instant.
+        """
+        if self._active_turn_task and not self._active_turn_task.done():
+            await asyncio.gather(self._active_turn_task, return_exceptions=True)
 
     async def _receive_frame(self) -> Optional[dict]:
         """Receive one WS frame as JSON. Plain-text frames (legacy clients) are
@@ -665,7 +697,6 @@ class ChatSession:
             # so the CancelledError handler can persist a partial response.
             closure_eligible = decision is not None and decision.closure_eligible
             sentinel_detected = False
-            last_voice: Optional[str] = None
             last_audio_seq: int = -1
 
 
@@ -702,9 +733,12 @@ class ChatSession:
                         async def _one_shot(text: str):
                             yield text
 
-                        async for event in audio_stream.wrap(_one_shot(full_text)):
+                        async for event in audio_stream.wrap(
+                            _one_shot(full_text), voice=self._voice
+                        ):
                             if isinstance(event, audio_stream.AudioSentence):
-                                last_voice = event.voice
+                                if self._voice is None:
+                                    self._voice = event.voice
                                 last_audio_seq = event.seq
                                 if not await self._send_json(
                                     _audio_frame(event.seq, event.mp3_bytes, event.voice)
@@ -714,8 +748,36 @@ class ChatSession:
                                         self._session_id,
                                     )
                                     return
-                    # When sentinel_detected, deliberately send NO chunks —
-                    # the session_complete frame drives the UI.
+                    else:
+                        # Sentinel fired. Invariant: closure_eligible already
+                        # requires turn_count >= CLOSURE_MIN_TURNS (engine),
+                        # and Step 7 re-checks the same turn_count — so this
+                        # turn WILL finalize; the farewell is never orphaned.
+                        # Replace the LLM's suppressed closing text with a
+                        # deterministic farewell so the voice UI clears its
+                        # thinking state via normal chunk/audio handling.
+                        # Ignore send failures (client gone) — Step 7 must
+                        # still persist finalized_at.
+                        await self._send_json(
+                            {"type": "chunk", "text": _CLOSURE_FAREWELL}
+                        )
+                        farewell_voice = self._voice or audio_stream.voice_for_language(
+                            audio_stream.detect_language(_CLOSURE_FAREWELL)
+                        )
+                        if self._voice is None:
+                            self._voice = farewell_voice
+                        try:
+                            farewell_mp3 = await tts.synthesize(
+                                _CLOSURE_FAREWELL, farewell_voice
+                            )
+                            await self._send_json(
+                                _audio_frame(last_audio_seq + 1, farewell_mp3, farewell_voice)
+                            )
+                        except tts.TTSError as exc:
+                            logger.info(
+                                "Session '%s': farewell TTS failed (silent degrade): %s",
+                                self._session_id, exc,
+                            )
                 else:
                     # Strip a stray sentinel from the tail before audio_stream
                     # sees it, then run text+audio through the wrap so audio
@@ -737,7 +799,9 @@ class ChatSession:
                         if tail:
                             yield tail
 
-                    async for event in audio_stream.wrap(_strip_sentinel_tail(stream)):
+                    async for event in audio_stream.wrap(
+                        _strip_sentinel_tail(stream), voice=self._voice
+                    ):
                         if isinstance(event, audio_stream.TextChunk):
                             accumulated.append(event.text)
                             if not await self._send_json({"type": "chunk", "text": event.text}):
@@ -747,7 +811,8 @@ class ChatSession:
                                 )
                                 return
                         elif isinstance(event, audio_stream.AudioSentence):
-                            last_voice = event.voice
+                            if self._voice is None:
+                                self._voice = event.voice
                             last_audio_seq = event.seq
                             if not await self._send_json(_audio_frame(event.seq, event.mp3_bytes, event.voice)):
                                 logger.info(
@@ -775,9 +840,11 @@ class ChatSession:
                         await self._send_json({"type": "chunk", "text": interceptor_correction})
 
                         correction_audio_ok = False
-                        voice_for_correction = last_voice or audio_stream.voice_for_language(
+                        voice_for_correction = self._voice or audio_stream.voice_for_language(
                             audio_stream.detect_language(interceptor_correction)
                         )
+                        if self._voice is None:
+                            self._voice = voice_for_correction
                         # If no audio sentences were emitted this turn (very short
                         # response with no terminator), last_audio_seq is -1 and
                         # the correction goes out as seq 0. Frontend plays in arrival
@@ -872,13 +939,11 @@ class ChatSession:
 
                                 if latest_msg is not None:
                                     if closure_eligible:
-                                        # The closing turn was suppressed
-                                        # from the client; drop the row
-                                        # from the transcript too so
-                                        # reviewers don't see the LLM's
-                                        # (occasionally noisy) closure
-                                        # text.
-                                        await db.delete(latest_msg)
+                                        # The LLM's closing text was replaced
+                                        # by the deterministic farewell on the
+                                        # wire; keep the transcript consistent
+                                        # with what the student actually saw.
+                                        latest_msg.content = _CLOSURE_FAREWELL
                                     elif CLOSURE_SENTINEL in latest_msg.content:
                                         latest_msg.content = (
                                             latest_msg.content.replace(CLOSURE_SENTINEL, "").rstrip()
@@ -890,11 +955,25 @@ class ChatSession:
                                 self._session_id,
                             )
                     await self._send_json({"type": "session_complete"})
+                    # Arm the loop guard BEFORE closing so a frame that races
+                    # the disconnect is ignored rather than spawning a turn.
                     self._should_close = True
                     logger.info(
                         "Session '%s': finalized by LLM closure sentinel.",
                         self._session_id,
                     )
+                    # Actively close the socket: the conversation loop is
+                    # parked in receive_text() (up to _IDLE_TIMEOUT_SECONDS),
+                    # so without this the client hangs and _wrap_up_session
+                    # (evaluation dispatch) is delayed until the idle timeout.
+                    try:
+                        if self._ws.application_state == WebSocketState.CONNECTED:
+                            await self._ws.close(code=1000, reason="Session finalized")
+                    except Exception as exc:
+                        logger.debug(
+                            "Session '%s': close after finalize failed - %s",
+                            self._session_id, exc,
+                        )
                 else:
                     logger.warning(
                         "Session '%s': closure sentinel ignored at turn %d (< %d).",

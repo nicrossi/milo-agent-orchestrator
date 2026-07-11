@@ -54,6 +54,10 @@ class UserSignals(BaseModel):
     # (formula, definition). Distinct from confusion (concept-level) and
     # hedging (epistemic uncertainty).
     procedural_request: bool = False
+    # True when the message signals the reflection is done / already covered /
+    # off the point (e.g. "ya lo hicimos", "el punto es...", "we already covered
+    # that"). Drives closure escalation in PolicyEngine.evaluate.
+    done_signal: bool = False
     latency_z: float = 0.0
     length_z: float = 0.0
     revisions: int = Field(default=0, ge=0)

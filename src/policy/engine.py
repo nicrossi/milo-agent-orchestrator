@@ -61,22 +61,47 @@ CLOSURE_SENTINEL = "[[END_REFLECTION]]"
 # closures of conversations that barely started.
 CLOSURE_MIN_TURNS = 4
 
-_CLOSURE_DIRECTIVE = (
-    "Closure protocol. ONLY when the student has clearly reached a natural "
-    "endpoint of their reflection (they articulated a takeaway, named a "
-    "concrete next step, or otherwise signaled they are done), produce a "
-    "closing turn instead of another Socratic question. The closing turn "
-    "must contain ALL of:\n"
+# Shape of the closing turn, shared by both directive variants. Kept verbatim
+# so the session.py sentinel-parsing + test_session_finalize.py contract is
+# unaffected regardless of which variant fired.
+_CLOSING_TURN_SHAPE = (
+    "The closing turn must contain ALL of:\n"
     "  1. A short, warm acknowledgement of what they reflected on (1 sentence).\n"
     "  2. An explicit statement that the activity is now complete — phrasing "
     "like 'Your reflection on this activity is complete' or 'You can finish "
     "this activity here'. Match the language the student has been using.\n"
     "  3. The literal token "
     f"{CLOSURE_SENTINEL} on its OWN final line, with no other text after it.\n"
-    "Do NOT ask any question in a closing turn. Do NOT emit the token in any "
-    "other situation, do not mention it to the student, and do not emit it "
-    "after a single short message. When in doubt, do not close: continue the "
-    "Socratic dialogue as planned."
+    "Do NOT ask any question in a closing turn."
+)
+
+_CLOSURE_DIRECTIVE = (
+    "Closure protocol. Close the reflection when the student has demonstrably "
+    "reached the activity's pedagogical goal (provided in your context) — "
+    "counting evidence from EARLIER turns, not only this one — or has otherwise "
+    "reached a natural endpoint (articulated a takeaway, named a concrete next "
+    "step, or signaled they are done). When the goal is already met, producing "
+    "a closing turn is the correct action, not a premature one; do NOT keep "
+    "asking further Socratic questions to re-confirm ground the student has "
+    "already covered. Otherwise, continue the Socratic dialogue as planned.\n"
+    f"{_CLOSING_TURN_SHAPE}\n"
+    "Do NOT emit the token in any other situation, do not mention it to the "
+    "student, and do not emit it after a single short message."
+)
+
+# Stronger variant, injected when the student has signaled the reflection is
+# done / redundant / off-point (UserSignals.done_signal). At this point another
+# question is likely to frustrate; bias firmly toward closing.
+_CLOSURE_DIRECTIVE_ESCALATED = (
+    "Closure protocol (priority). The student has signaled the reflection is "
+    "complete or is pushing back on continued questioning (e.g. saying you have "
+    "already covered this, or that a line of questioning is off the point). "
+    "Unless a CORE part of the activity's pedagogical goal (in your context) is "
+    "still genuinely unaddressed, produce a closing turn THIS turn. Do NOT ask "
+    "another question and do NOT rephrase a question the student has already "
+    "answered.\n"
+    f"{_CLOSING_TURN_SHAPE}\n"
+    "Do NOT mention the token to the student."
 )
 
 # Module-level singletons — stateless, safe to share across all sessions.
@@ -430,8 +455,17 @@ class PolicyEngine:
             and next_state in (FSMState.MONITORING, FSMState.EVALUATION)
             and next_recovery == RecoveryState.NORMAL
         )
+        # Escalate the directive when the student has signaled they are done /
+        # the questioning is redundant — this turn or in the last 2 turns, so a
+        # cue one turn back still counts.
+        closure_escalated = closure_eligible and (
+            ctx.user_signals.done_signal
+            or any(s.done_signal for s in ctx.signals_window[-2:])
+        )
         if closure_eligible:
-            plan.prompt_directives.append(_CLOSURE_DIRECTIVE)
+            plan.prompt_directives.append(
+                _CLOSURE_DIRECTIVE_ESCALATED if closure_escalated else _CLOSURE_DIRECTIVE
+            )
         if trace is not None:
             reasons = []
             if ctx.turn_count < CLOSURE_MIN_TURNS:
@@ -442,6 +476,7 @@ class PolicyEngine:
                 reasons.append(f"recovery={next_recovery.value}")
             trace.closure_eligibility = {
                 "eligible": closure_eligible,
+                "escalated": closure_escalated,
                 "reason": "all gates passed" if closure_eligible else "; ".join(reasons),
             }
 

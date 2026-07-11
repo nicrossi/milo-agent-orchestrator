@@ -137,6 +137,31 @@ _PROCEDURAL_REQUEST_PATTERNS = [
     r"\bhow\s+do\s+(you|i)\s+(calculate|compute)\b",
 ]
 
+_DONE_SIGNAL_PATTERNS = [
+    # Spanish — student signals the reflection is finished, already covered,
+    # or that the current line of questioning is off the point.
+    r"\bya\s+lo\s+hicimos\b",
+    r"\bya\s+hicimos\b",
+    r"\bya\s+lo\s+dijimos\b",
+    r"\bya\s+lo\s+dije\b",
+    r"\bya\s+respond[ií]\b",
+    r"\bno\s+tiene\s+que\s+ver\b",
+    r"\bel\s+punto\s+es\b",
+    r"\bel\s+punto\s+era\b",
+    r"\bya\s+entend[ií]\b",
+    r"\bcreo\s+que\s+ya\b",
+    # English
+    r"\bwe\s+already\s+did\b",
+    r"\bwe\s+already\s+covered\b",
+    r"\balready\s+covered\s+that\b",
+    r"\bi\s+already\s+said\b",
+    r"\bi\s+already\s+answered\b",
+    r"\bthat'?s\s+off\s+topic\b",
+    r"\bnot\s+related\b",
+    r"\bthat'?s\s+the\s+point\b",
+    r"\bi\s+get\s+it\s+now\b",
+]
+
 _REVISION_MARKERS = [
     # Spanish
     r"\bperd[oó]n\b",
@@ -162,6 +187,7 @@ _CONFUSION_RE = [re.compile(p, re.IGNORECASE) for p in _CONFUSION_PATTERNS]
 _DIRECT_ANSWER_RE = [re.compile(p, re.IGNORECASE) for p in _DIRECT_ANSWER_PATTERNS]
 _ATTEMPT_RE = [re.compile(p, re.IGNORECASE) for p in _ATTEMPT_MARKERS]
 _PROCEDURAL_REQUEST_RE = [re.compile(p, re.IGNORECASE) for p in _PROCEDURAL_REQUEST_PATTERNS]
+_DONE_SIGNAL_RE = [re.compile(p, re.IGNORECASE) for p in _DONE_SIGNAL_PATTERNS]
 _REVISION_RE = [re.compile(p, re.IGNORECASE) for p in _REVISION_MARKERS]
 
 # Saturation cap: if a 5-word message has 2 hedges, hedging score ≈ 1.0.
@@ -272,6 +298,22 @@ def extract_procedural_request(text: str) -> bool:
     if not text or not text.strip():
         return False
     return _count_pattern_hits(text, _PROCEDURAL_REQUEST_RE) > 0
+
+
+def extract_done_signal(text: str) -> bool:
+    """True when the student signals the reflection is done or the current line
+    of questioning is redundant / off the point.
+
+    Catches explicit completion and push-back cues ("ya lo hicimos", "eso ya no
+    tiene que ver", "el punto es...", "we already covered that", "that's off
+    topic"). Distinct from `attempt_present` (reasoning content) and `confusion`
+    (concept-level struggle). Feeds the closure-escalation branch in
+    PolicyEngine.evaluate so a student who is clearly finished is not asked yet
+    another Socratic question.
+    """
+    if not text or not text.strip():
+        return False
+    return _count_pattern_hits(text, _DONE_SIGNAL_RE) > 0
 
 
 def extract_revision_markers(text: str) -> int:

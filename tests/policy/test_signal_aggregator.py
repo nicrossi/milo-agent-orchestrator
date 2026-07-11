@@ -40,6 +40,26 @@ def test_aggregator_direct_answer_request_no_attempt():
     assert sig.attempt_present is False
 
 
+def test_aggregator_done_signal_from_message():
+    sig = build_user_signals(
+        user_message="eso ya no tiene que ver con lo que venimos hablando",
+        signals_window=[],
+        prev_milo_response_ts=None,
+        now_ts=1000.0,
+    )
+    assert sig.done_signal is True
+
+
+def test_aggregator_done_signal_false_on_reasoning():
+    sig = build_user_signals(
+        user_message="creo que los herbívoros no podrían digerir carne porque su cuerpo no está adaptado",
+        signals_window=[],
+        prev_milo_response_ts=None,
+        now_ts=1000.0,
+    )
+    assert sig.done_signal is False
+
+
 def test_aggregator_latency_z_uses_window():
     sig = build_user_signals(
         user_message="ok",
